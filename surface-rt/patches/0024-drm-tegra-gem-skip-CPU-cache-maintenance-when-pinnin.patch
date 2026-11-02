@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 12:14:01 +0000
+Subject: [PATCH 24/45] drm/tegra: gem: skip CPU cache maintenance when pinning
+ native BOs
+
+tegra_bo_pin() maps the BO for the client device with dma_map_sgtable()
+on every pin, and the legacy job submission path (DRM_TEGRA_SUBMIT, used
+by the grate/opentegra GLES driver) pins every buffer of every job. On a
+non-coherent ARM SoC this cleans the whole BO from L1/L2 each time: with
+a 1366x768 colour + depth target that is several MiB of cache cleaning
+per draw call. perf on a Tegra30 shows 90% of a kmscube process in
+v7_dma_clean_range/l2c210_clean_range under tegra_bo_pin.
+
+Native tegra BOs are only accessed by the CPU through write-combined
+mappings (userspace mmap, kernel vmap and dma_alloc_wc all use WC) and
+their pages are flushed when they are allocated, so there is nothing to
+clean or invalidate. Pass DMA_ATTR_SKIP_CPU_SYNC for them. Imported
+dma-bufs keep using the exporter's map/unmap and are unaffected.
+---
+ drivers/gpu/drm/tegra/gem.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/tegra/gem.c b/drivers/gpu/drm/tegra/gem.c
+index 436394e04..1608b7edf 100644
+--- a/drivers/gpu/drm/tegra/gem.c
++++ b/drivers/gpu/drm/tegra/gem.c
+@@ -129,7 +129,16 @@ static struct host1x_bo_mapping *tegra_bo_pin(struct device *dev, struct host1x_
+ 			goto free;
+ 	}
+ 
+-	err = dma_map_sgtable(dev, map->sgt, direction, 0);
++	/*
++	 * Native buffer objects are only ever accessed by the CPU through
++	 * write-combined mappings (userspace mmap, kernel vmap, dma_alloc_wc),
++	 * and their pages were flushed from the caches when they were
++	 * allocated. Cache maintenance on every pin is therefore pointless, and
++	 * very expensive: legacy job submissions pin every BO of every job, so
++	 * a 1366x768 render target cost ~4 MiB of cache cleaning per draw call
++	 * on Tegra30 (90% of the CPU time of a GLES client in perf).
++	 */
++	err = dma_map_sgtable(dev, map->sgt, direction, DMA_ATTR_SKIP_CPU_SYNC);
+ 	if (err)
+ 		goto free_sgt;
+ 
+@@ -165,7 +174,8 @@ static void tegra_bo_unpin(struct host1x_bo_mapping *map)
+ 						  map->direction);
+ 		dma_buf_detach(map->attach->dmabuf, map->attach);
+ 	} else {
+-		dma_unmap_sgtable(map->dev, map->sgt, map->direction, 0);
++		dma_unmap_sgtable(map->dev, map->sgt, map->direction,
++				  DMA_ATTR_SKIP_CPU_SYNC);
+ 		sg_free_table(map->sgt);
+ 		kfree(map->sgt);
+ 	}
+-- 
+2.47.3
+

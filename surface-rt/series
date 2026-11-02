@@ -1,0 +1,63 @@
+# The patches, in the order they are applied on Linux 7.2.13: one shell command a line, run with PUB
+# (this directory) set and apply (the build script) applying a patch once. Each group says where its
+# patches come from; PROVENANCE.md has the citations.
+#
+# Surface RT support from libre-tegra (codeberg.org/libre-tegra/linux, v7.0.1-stable), authors kept:
+# SMP through the parking protocol, the L2 cache through the secure monitor, the cover's I2C gate and
+# HID quirk, the PMIC's power-off and restart, the device tree, the memory controller's hot reset
+apply "$PUB/patches/0001-ARM-kernel-Add-ACPI-Parking-Protocol-for-ARM32-devic.patch"
+apply "$PUB/patches/0002-firmware-tf-add-surface-rt-support.patch"
+apply "$PUB/patches/0003-i2c-Add-GPIO-based-hotplug-gate.patch"
+apply "$PUB/patches/0004-HID-microsoft-add-quirk-to-tCover-2nd-gen.patch"
+apply "$PUB/patches/0005-mfd-tps65910-Use-devm_register_power_off_handler.patch"
+apply "$PUB/patches/0006-ARM-tegra-Add-device-tree-for-Microsoft-Surface-RT.patch"
+apply "$PUB/patches/0007-memory-tegra-Don-t-error-out-DMA-flushing.patch"
+# The internal microphones (our own, black-box)
+apply "$PUB/patches/0008-ARM-dts-tegra30-surface-rt-wire-up-the-internal-digi.patch"
+# The PMIC watchdog (Dennis Palmer, nerves_system_surface_rt)
+apply "$PUB/patches/0009-watchdog-Add-TPS65911-watchdog-driver.patch"
+# WM8962 SYSCLK fix (Dennis Palmer, nerves_system_surface_rt), and the microphones' data pin (our own)
+apply "$PUB/patches/0010-ASoC-wm8962-Don-t-turn-off-SYSCLK-that-was-already-o.patch"
+apply "$PUB/patches/0011-ARM-dts-tegra30-surface-rt-the-DMIC-data-line-is-on-.patch"
+# Reboot and power-off through the PMIC without hanging (our own, black-box)
+apply "$PUB/patches/0012-regulator-tps65910-don-t-clear-external-sleep-contro.patch"
+apply "$PUB/patches/0013-regulator-tps65910-don-t-clear-external-sleep-contro.patch"
+# USB mass storage on the ChipIdea host (Dennis Palmer, nerves_system_surface_rt)
+apply "$PUB/patches/0014-usb-chipidea-Don-t-bounce-URBs-with-their-own-DMA-ma.patch"
+# CPU idle, the absent boot flash, the video decoder, the headphones, Bluetooth's wiring (our own)
+apply "$PUB/patches/0015-cpuidle-tegra-keep-only-WFI-when-the-secure-monitor-.patch"
+apply "$PUB/patches/0016-ARM-dts-tegra30-surface-rt-drop-the-SPI-NOR-boot-fla.patch"
+apply "$PUB/patches/0017-media-tegra-vde-use-a-semaphore-for-the-hardware-loc.patch"
+apply "$PUB/patches/0018-media-tegra-vde-allocate-bitstream-buffers-write-com.patch"
+apply "$PUB/patches/0019-ARM-dts-tegra30-surface-rt-route-the-headphone-outpu.patch"
+apply "$PUB/patches/0020-ARM-tegra-surface-rt-Describe-the-UART-Bluetooth-wir.patch"
+# The OV9726 cameras: binding, driver (register tables from NVIDIA's Tegra Android kernel), board
+apply "$PUB/patches/0021-dt-bindings-media-i2c-add-OmniVision-OV9726.patch"
+apply "$PUB/patches/0022-media-i2c-add-OmniVision-OV9726-sensor-driver.patch"
+apply "$PUB/patches/0023-ARM-tegra-surface-rt-describe-the-cameras.patch"
+# GPU buffer pinning without cache maintenance; mwifiex with older firmware (our own)
+apply "$PUB/patches/0024-drm-tegra-gem-skip-CPU-cache-maintenance-when-pinnin.patch"
+apply "$PUB/patches/0025-wifi-mwifiex-use-the-legacy-scan-with-pre-14.68-firm.patch"
+# Camera fixes: sensor, tegra-video capture, host1x fences, mounting (our own, black-box)
+apply "$PUB/patches/0026-media-i2c-ov9726-fix-Bayer-order-and-gain-drop-test-.patch"
+apply "$PUB/patches/0027-staging-media-tegra-video-tegra20-fix-slow-frame-rat.patch"
+apply "$PUB/patches/0028-gpu-host1x-cancel-the-fence-when-an-interruptible-wa.patch"
+apply "$PUB/patches/0029-media-i2c-ov9726-honour-DT-rotation-drop-the-vertica.patch"
+apply "$PUB/patches/0030-staging-media-tegra-video-VI-vflip-for-upside-down-s.patch"
+apply "$PUB/patches/0031-ARM-tegra-surface-rt-cameras-are-mounted-upside-down.patch"
+apply "$PUB/patches/0032-ARM-tegra-surface-rt-front-camera-is-CAM1-on-CSI-A.patch"
+apply "$PUB/patches/0033-ARM-tegra-surface-rt-the-front-camera-CAM1-is-mounte.patch"
+# Quieter boot and board details: SDHCI, supplies, L2C-310, backlight, fw_devlink, clocks, GPIO,
+# regmap caches, microphone detection, the PMC's core domain (our own)
+apply "$PUB/patches/0034-ARM-dts-tegra30-say-512-byte-blocks-in-the-SDHCI-cap.patch"
+apply "$PUB/patches/0035-ARM-dts-tegra30-surface-rt-describe-the-HDMI-LVDS-to.patch"
+apply "$PUB/patches/0036-ARM-dts-tegra30-surface-rt-no-L2C-310-full-line-of-z.patch"
+apply "$PUB/patches/0037-ARM-dts-tegra30-surface-rt-dimmer-backlight-floor-pe.patch"
+apply "$PUB/patches/0038-driver-core-fw_devlink-a-probed-consumer-needs-no-sy.patch"
+apply "$PUB/patches/0039-clk-tegra30-drop-the-cclk-lookups-whose-names-do-not.patch"
+apply "$PUB/patches/0040-gpio-tegra-allocate-the-GPIO-base-dynamically.patch"
+apply "$PUB/patches/0041-ASoC-tegra30-ahub-read-uncached-registers-from-the-h.patch"
+apply "$PUB/patches/0042-ASoC-wm8962-resume-the-codec-to-set-up-microphone-de.patch"
+apply "$PUB/patches/0043-ASoC-tegra30-i2s-read-uncached-registers-from-the-ha.patch"
+apply "$PUB/patches/0044-ARM-tegra-surface-rt-linear-backlight-levels-at-1-kH.patch"
+apply "$PUB/patches/0045-soc-tegra-pmc-mark-the-early-instance-synced-too.patch"

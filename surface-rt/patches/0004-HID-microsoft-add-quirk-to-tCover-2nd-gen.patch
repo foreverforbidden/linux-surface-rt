@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20Schw=C3=B6bel?= <jonasschwoebel@yahoo.de>
+Date: Wed, 6 Oct 2021 14:47:50 +0200
+Subject: [PATCH 04/45] HID: microsoft: add quirk to tCover 2nd gen
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Trackpad right/left click correctly send BTN_LEFT/RIGHT but
+additionally sends KEY_F23.
+
+KEY_F23 is linked to some special actions:
+pmOS -> trackpad disabled notifitcation
+raspiOS -> open new terminal
+
+Rebased to Linux 7.2.13 for linux-surface-rt; from codeberg.org/libre-tegra/linux v7.0.1-stable
+4ecd00c69279.
+
+Signed-off-by: Jonas Schwöbel <jonasschwoebel@yahoo.de>
+---
+ drivers/hid/hid-microsoft.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/drivers/hid/hid-microsoft.c b/drivers/hid/hid-microsoft.c
+index 18ac21c0b..ef10ed34b 100644
+--- a/drivers/hid/hid-microsoft.c
++++ b/drivers/hid/hid-microsoft.c
+@@ -27,6 +27,7 @@
+ #define MS_DUPLICATE_USAGES	BIT(5)
+ #define MS_SURFACE_DIAL		BIT(6)
+ #define MS_QUIRK_FF		BIT(7)
++#define MS_T_COVER_2		BIT(8)
+ 
+ struct ms_data {
+ 	unsigned long quirks;
+@@ -203,6 +204,14 @@ static int ms_input_mapping(struct hid_device *hdev, struct hid_input *hi,
+ 			return ret;
+ 	}
+ 
++	/*
++	 * The second generation tCover will send KEY_F23 on the trackpad
++	 * left/right click, despite this BTN_LEFT/RIGHT event is still sent
++	 * correctly so the KEY_F23 event may be just ignored.
++	 */
++	if (quirks & MS_T_COVER_2)
++		ms_map_key_clear(KEY_F23);
++
+ 	return 0;
+ }
+ 
+@@ -459,6 +468,11 @@ static const struct hid_device_id ms_devices[] = {
+ 		.driver_data = MS_QUIRK_FF },
+ 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_8BITDO_SN30_PRO_PLUS),
+ 		.driver_data = MS_QUIRK_FF },
++
++	{ HID_I2C_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_TYPE_COVER_2),
++		.driver_data = MS_T_COVER_2 },
++	{ HID_I2C_DEVICE(USB_VENDOR_ID_MICROSOFT, USB_DEVICE_ID_MS_TOUCH_COVER_2),
++		.driver_data = MS_T_COVER_2 },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(hid, ms_devices);
+-- 
+2.47.3
+

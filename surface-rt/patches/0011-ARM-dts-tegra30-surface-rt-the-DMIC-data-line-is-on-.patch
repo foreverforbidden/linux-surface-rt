@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 18:43:02 +0000
+Subject: [PATCH 11/45] ARM: dts: tegra30: surface-rt: the DMIC data line is on
+ GPIO5
+
+A speaker-to-microphone loopback test (1 kHz tone) only records with
+DMICDAT on GPIO5; GPIO3 never carries data and GPIO6 is just noise.
+---
+ arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index 6570c63f7..ae7aaa719 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -239,9 +239,9 @@ wm8962: audio-codec@1a {
+ 
+ 			/*
+ 			 * Digital microphones (WM7220): DMICCLK on GPIO2, DMICDAT on
+-			 * GPIO3, found by trying every pair (2026-10-28).
++			 * GPIO5: with the speaker playing a tone, only this pair records it.
+ 			 */
+-			gpio-cfg = <0x0000 0x0013 0x8014 0x0000 0x0000 0x0000>;
++			gpio-cfg = <0x0000 0x0013 0x0000 0x0000 0x8014 0x0000>;
+ 
+ 			interrupt-parent = <&gpio>;
+ 			interrupts = <TEGRA_GPIO(W, 3) IRQ_TYPE_LEVEL_HIGH>;
+-- 
+2.47.3
+

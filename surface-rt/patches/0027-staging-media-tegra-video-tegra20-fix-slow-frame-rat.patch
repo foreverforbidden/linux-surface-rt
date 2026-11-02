@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 13:44:07 +0000
+Subject: [PATCH 27/45] staging: media: tegra-video: tegra20: fix slow frame
+ rates and fence leak
+
+Two problems in the Tegra20/30 capture kthread:
+
+- The syncpoint waits time out after 200 ms, so a sensor running at 5 fps
+  or slower can never deliver a frame. Raise the timeout to 3 s, which
+  covers frame periods down to ~0.35 fps.
+
+- host1x_syncpt_wait() always waits interruptibly and the driver retried
+  it in a loop on -ERESTARTSYS. When the kthread got stuck returning
+  -ERESTARTSYS, the loop spun and each iteration leaked a fence that was
+  never cancelled. On a Surface RT (Tegra30 + OV9726) a 5 fps capture
+  filled lowmem and the OOM killer took the system down. Use a local
+  uninterruptible wait built on host1x_fence_create()/cancel() and drop
+  the retry loops.
+
+Tested on Surface RT: 30, 5 and 1 fps capture, lowmem stays constant.
+---
+ drivers/staging/media/tegra-video/tegra20.c | 69 ++++++++++++---------
+ 1 file changed, 41 insertions(+), 28 deletions(-)
+
+diff --git a/drivers/staging/media/tegra-video/tegra20.c b/drivers/staging/media/tegra-video/tegra20.c
+index e513e6ccb..61bc8adce 100644
+--- a/drivers/staging/media/tegra-video/tegra20.c
++++ b/drivers/staging/media/tegra-video/tegra20.c
+@@ -18,6 +18,7 @@
+ #include <linux/clk.h>
+ #include <linux/clk/tegra.h>
+ #include <linux/delay.h>
++#include <linux/dma-fence.h>
+ #include <linux/host1x.h>
+ #include <linux/iopoll.h>
+ #include <linux/kernel.h>
+@@ -29,7 +30,12 @@
+ #include "vip.h"
+ #include "vi.h"
+ 
+-#define TEGRA_VI_SYNCPT_WAIT_TIMEOUT			msecs_to_jiffies(200)
++/*
++ * Must be longer than the longest frame period, otherwise a sensor running
++ * at 5 fps or slower always hits the frame start timeout. 3 s covers frame
++ * rates down to ~0.35 fps.
++ */
++#define TEGRA_VI_SYNCPT_WAIT_TIMEOUT			msecs_to_jiffies(3000)
+ 
+ #define TEGRA20_MIN_WIDTH	32U
+ #define TEGRA20_MAX_WIDTH	8190U
+@@ -570,6 +576,35 @@ static void tegra20_channel_vi_buffer_setup(struct tegra_vi_channel *chan,
+ 	}
+ }
+ 
++/*
++ * Uninterruptible syncpoint wait. host1x_syncpt_wait() always waits
++ * interruptibly; in the capture kthread it could return -ERESTARTSYS
++ * immediately and repeatedly, and the old retry loop around it leaked one
++ * never-cancelled fence per iteration until the system ran out of memory.
++ */
++static int tegra20_syncpt_wait(struct host1x_syncpt *sp, u32 thresh)
++{
++	struct dma_fence *fence;
++	long ret;
++
++	if ((s32)(host1x_syncpt_read(sp) - thresh) >= 0)
++		return 0;
++
++	fence = host1x_fence_create(sp, thresh, false);
++	if (IS_ERR(fence))
++		return PTR_ERR(fence);
++
++	ret = dma_fence_wait_timeout(fence, false, TEGRA_VI_SYNCPT_WAIT_TIMEOUT);
++	if (ret <= 0)
++		host1x_fence_cancel(fence);
++	dma_fence_put(fence);
++
++	if ((s32)(host1x_syncpt_read(sp) - thresh) >= 0)
++		return 0;
++
++	return ret < 0 ? ret : -ETIMEDOUT;
++}
++
+ static int tegra20_channel_capture_frame(struct tegra_vi_channel *chan,
+ 					 struct tegra_channel_buffer *buf,
+ 					 struct tegra_csi_channel *csi_chan)
+@@ -586,28 +621,11 @@ static int tegra20_channel_capture_frame(struct tegra_vi_channel *chan,
+ 				  CSI_PP_START_MARKER_FRAME_MAX(0xf) |
+ 				  CSI_PP_SINGLE_SHOT | CSI_PP_ENABLE);
+ 
+-		/*
+-		 * ERESTARTSYS workaround for syncpoints is used because host1x_syncpt_wait
+-		 * is unconditionally interruptible. This is not an issue with single shots
+-		 * or low resolution capture, but -ERESTARTSYS occurs quite often with high
+-		 * resolution or high framerate captures and if not addressed here will
+-		 * cause capture to fail entirely.
+-		 *
+-		 * TODO: once uninterruptible version of host1x_syncpt_wait is available,
+-		 * host1x_syncpt_wait should be swapped and ERESTARTSYS workaround can be
+-		 * removed.
+-		 */
+-
+ 		val = host1x_syncpt_read(chan->frame_start_sp[0]);
+-		do {
+-			err = host1x_syncpt_wait(chan->frame_start_sp[0],
+-						 val + 1, TEGRA_VI_SYNCPT_WAIT_TIMEOUT, NULL);
+-		} while (err == -ERESTARTSYS);
+-
++		err = tegra20_syncpt_wait(chan->frame_start_sp[0], val + 1);
+ 		if (err) {
+-			if (err != -ERESTARTSYS)
+-				dev_err_ratelimited(&chan->video.dev,
+-						    "frame start syncpt timeout: %d\n", err);
++			dev_err_ratelimited(&chan->video.dev,
++					    "frame start syncpt timeout: %d\n", err);
+ 
+ 			tegra20_csi_write(csi_chan, TEGRA_CSI_PIXEL_STREAM_PP_COMMAND(port),
+ 					  CSI_PP_START_MARKER_FRAME_MAX(0xf) | CSI_PP_RESET);
+@@ -622,14 +640,9 @@ static int tegra20_channel_capture_frame(struct tegra_vi_channel *chan,
+ 	}
+ 
+ 	val = host1x_syncpt_read(chan->mw_ack_sp[0]);
+-	do {
+-		err = host1x_syncpt_wait(chan->mw_ack_sp[0], val + 1,
+-					 TEGRA_VI_SYNCPT_WAIT_TIMEOUT, NULL);
+-	} while (err == -ERESTARTSYS);
+-
++	err = tegra20_syncpt_wait(chan->mw_ack_sp[0], val + 1);
+ 	if (err) {
+-		if (err != -ERESTARTSYS)
+-			dev_err_ratelimited(&chan->video.dev, "mw ack syncpt timeout: %d\n", err);
++		dev_err_ratelimited(&chan->video.dev, "mw ack syncpt timeout: %d\n", err);
+ 		goto exit;
+ 	}
+ 
+-- 
+2.47.3
+

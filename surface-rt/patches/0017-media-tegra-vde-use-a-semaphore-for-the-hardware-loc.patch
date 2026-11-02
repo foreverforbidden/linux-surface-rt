@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:37:54 +0000
+Subject: [PATCH 17/45] media: tegra-vde: use a semaphore for the hardware lock
+
+The hardware lock is taken in decode_begin() from the m2m device_run
+context and released by the tegra-vde workqueue once decoding has
+completed (or by system resume after suspend). A mutex must be released
+by the task that acquired it, so with CONFIG_DEBUG_MUTEXES every decoded
+stream triggers
+
+  DEBUG_LOCKS_WARN_ON(__owner_task(owner) != get_current())
+
+from tegra_vde_h264_decode_wait(). Use a binary semaphore, which has no
+owner semantics. Also drop the lock again when pm_runtime_force_suspend()
+fails, instead of leaving it held forever.
+---
+ drivers/media/platform/nvidia/tegra-vde/h264.c |  6 +++---
+ drivers/media/platform/nvidia/tegra-vde/vde.c  | 10 ++++++----
+ drivers/media/platform/nvidia/tegra-vde/vde.h  |  4 +++-
+ 3 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/media/platform/nvidia/tegra-vde/h264.c b/drivers/media/platform/nvidia/tegra-vde/h264.c
+index 2a2211671..f4e1ac8f4 100644
+--- a/drivers/media/platform/nvidia/tegra-vde/h264.c
++++ b/drivers/media/platform/nvidia/tegra-vde/h264.c
+@@ -539,7 +539,7 @@ static int tegra_vde_decode_begin(struct tegra_vde *vde,
+ 	unsigned int macroblocks_nb;
+ 	int err;
+ 
+-	err = mutex_lock_interruptible(&vde->lock);
++	err = down_interruptible(&vde->lock);
+ 	if (err)
+ 		return err;
+ 
+@@ -588,7 +588,7 @@ static int tegra_vde_decode_begin(struct tegra_vde *vde,
+ 	pm_runtime_put_autosuspend(dev);
+ 
+ unlock:
+-	mutex_unlock(&vde->lock);
++	up(&vde->lock);
+ 
+ 	return err;
+ }
+@@ -613,7 +613,7 @@ static void tegra_vde_decode_abort(struct tegra_vde *vde)
+ 
+ 	pm_runtime_put_autosuspend(dev);
+ 
+-	mutex_unlock(&vde->lock);
++	up(&vde->lock);
+ }
+ 
+ static int tegra_vde_decode_end(struct tegra_vde *vde)
+diff --git a/drivers/media/platform/nvidia/tegra-vde/vde.c b/drivers/media/platform/nvidia/tegra-vde/vde.c
+index c3097085a..c4f953e67 100644
+--- a/drivers/media/platform/nvidia/tegra-vde/vde.c
++++ b/drivers/media/platform/nvidia/tegra-vde/vde.c
+@@ -333,7 +333,7 @@ static int tegra_vde_probe(struct platform_device *pdev)
+ 
+ 	INIT_LIST_HEAD(&vde->map_list);
+ 	mutex_init(&vde->map_lock);
+-	mutex_init(&vde->lock);
++	sema_init(&vde->lock, 1);
+ 	init_completion(&vde->decode_completion);
+ 
+ 	err = tegra_vde_iommu_init(vde);
+@@ -431,11 +431,13 @@ static __maybe_unused int tegra_vde_pm_suspend(struct device *dev)
+ 	struct tegra_vde *vde = dev_get_drvdata(dev);
+ 	int err;
+ 
+-	mutex_lock(&vde->lock);
++	down(&vde->lock);
+ 
+ 	err = pm_runtime_force_suspend(dev);
+-	if (err < 0)
++	if (err < 0) {
++		up(&vde->lock);
+ 		return err;
++	}
+ 
+ 	return 0;
+ }
+@@ -449,7 +451,7 @@ static __maybe_unused int tegra_vde_pm_resume(struct device *dev)
+ 	if (err < 0)
+ 		return err;
+ 
+-	mutex_unlock(&vde->lock);
++	up(&vde->lock);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/media/platform/nvidia/tegra-vde/vde.h b/drivers/media/platform/nvidia/tegra-vde/vde.h
+index abac0221d..2e74c26c9 100644
+--- a/drivers/media/platform/nvidia/tegra-vde/vde.h
++++ b/drivers/media/platform/nvidia/tegra-vde/vde.h
+@@ -13,6 +13,7 @@
+ #include <linux/iova.h>
+ #include <linux/list.h>
+ #include <linux/mutex.h>
++#include <linux/semaphore.h>
+ #include <linux/types.h>
+ #include <linux/workqueue.h>
+ 
+@@ -102,7 +103,8 @@ struct tegra_vde {
+ 	void __iomem *vdma;
+ 	void __iomem *frameid;
+ 	struct device *dev;
+-	struct mutex lock;
++	/* held from decode start until the IRQ-completion worker finishes */
++	struct semaphore lock;
+ 	struct mutex map_lock;
+ 	struct list_head map_list;
+ 	struct reset_control *rst;
+-- 
+2.47.3
+

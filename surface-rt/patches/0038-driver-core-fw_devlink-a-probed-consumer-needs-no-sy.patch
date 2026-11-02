@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 01:10:55 +0000
+Subject: [PATCH 38/45] driver core: fw_devlink: a probed consumer needs no
+ sync-state link
+
+When a parent device that supplies its own child's device-less graph
+nodes binds, fw_devlink picks up those dangling consumers and asks for
+a SYNC_STATE_ONLY proxy link from the child device. If the child probed
+first (tegra-video: the VI populates its CSI child, which probes before
+the VI finishes), device_link_add() refuses the link by design, and
+fw_devlink logged it as an error:
+
+  tegra-csi 54080800.csi: Failed to create device link (0x180) with
+  supplier 54080000.vi for /host1x@50000000/vi@54080000/csi@800/channel@1
+
+A sync-state-only link only matters until the consumer probes; skip it
+then.
+---
+ drivers/base/core.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/base/core.c b/drivers/base/core.c
+index 4d0266829..ce358def2 100644
+--- a/drivers/base/core.c
++++ b/drivers/base/core.c
+@@ -2236,6 +2236,22 @@ static int fw_devlink_create_devlink(struct device *con,
+ 			goto out;
+ 		}
+ 
++		/*
++		 * A SYNC_STATE_ONLY link only matters until the consumer has
++		 * probed, and device_link_add() refuses one after that. That
++		 * is no failure: it happens when a child device probes before
++		 * its parent, the supplier, finishes probing, and the parent's
++		 * dangling consumers (the child's device-less graph nodes)
++		 * are picked up as it binds.
++		 */
++		if (flags & DL_FLAG_SYNC_STATE_ONLY &&
++		    con->links.status != DL_DEV_NO_DRIVER &&
++		    con->links.status != DL_DEV_PROBING) {
++			dev_dbg(con, "Not linking %pfwf - consumer already probed\n",
++				sup_handle);
++			goto out;
++		}
++
+ 		if (con != sup_dev && !device_link_add(con, sup_dev, flags)) {
+ 			dev_err(con, "Failed to create device link (0x%x) with supplier %s for %pfwf\n",
+ 				flags, dev_name(sup_dev), link->consumer);
+-- 
+2.47.3
+

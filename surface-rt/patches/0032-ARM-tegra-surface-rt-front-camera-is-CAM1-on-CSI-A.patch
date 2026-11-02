@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 13:44:35 +0000
+Subject: [PATCH 32/45] ARM: tegra: surface-rt: front camera is CAM1 on CSI-A
+
+The first capture from CAM2 (reset BB7, LDO R7, CSI-B) showed the wall
+behind the tablet, so CAM2 is the rear camera. Make CAM1 (reset BB0,
+LDO R6, CSI-A) the enabled front camera and keep CAM2 described as the
+disabled rear camera.
+---
+ .../nvidia/tegra30-microsoft-surface-rt.dts   | 20 +++++++++----------
+ 1 file changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index b86ce8fec..123c1f7c2 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -73,7 +73,7 @@ csi@800 {
+ 
+ 				avdd-dsi-csi-supply = <&avdd_dsi_csi>;
+ 
+-				/* CSI-A: rear camera (CAM1), 1 lane */
++				/* CSI-A: front camera (CAM1), 1 lane */
+ 				channel@0 {
+ 					reg = <0>;
+ 
+@@ -87,7 +87,7 @@ port@0 {
+ 
+ 						csia_input: endpoint {
+ 							data-lanes = <1>;
+-							remote-endpoint = <&rear_camera_output>;
++							remote-endpoint = <&front_camera_output>;
+ 						};
+ 					};
+ 
+@@ -100,7 +100,7 @@ csia_output: endpoint {
+ 					};
+ 				};
+ 
+-				/* CSI-B: front camera (CAM2), 1 lane */
++				/* CSI-B: rear camera (CAM2), 1 lane */
+ 				channel@1 {
+ 					reg = <1>;
+ 
+@@ -114,7 +114,7 @@ port@0 {
+ 
+ 						csib_input: endpoint {
+ 							data-lanes = <3>;
+-							remote-endpoint = <&front_camera_output>;
++							remote-endpoint = <&rear_camera_output>;
+ 						};
+ 					};
+ 
+@@ -331,9 +331,9 @@ front_camera: camera@10 {
+ 			assigned-clock-parents = <&tegra_car TEGRA30_CLK_PLL_P>,
+ 						 <&tegra_car TEGRA30_CLK_VI_SENSOR>;
+ 
+-			reset-gpios = <&gpio TEGRA_GPIO(BB, 7) GPIO_ACTIVE_LOW>;
++			reset-gpios = <&gpio TEGRA_GPIO(BB, 0) GPIO_ACTIVE_LOW>;
+ 
+-			avdd-supply = <&vdd_cam2_ldo>;
++			avdd-supply = <&vdd_cam1_ldo>;
+ 			dovdd-supply = <&vdd_1v8_cam>;
+ 
+ 			orientation = <0>;
+@@ -345,7 +345,7 @@ front_camera_output: endpoint {
+ 					bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+ 					data-lanes = <1>;
+ 					link-frequencies = /bits/ 64 <210000000>;
+-					remote-endpoint = <&csib_input>;
++					remote-endpoint = <&csia_input>;
+ 				};
+ 			};
+ 		};
+@@ -373,9 +373,9 @@ rear_camera: rear-camera@10 {
+ 			assigned-clock-parents = <&tegra_car TEGRA30_CLK_PLL_P>,
+ 						 <&tegra_car TEGRA30_CLK_VI_SENSOR>;
+ 
+-			reset-gpios = <&gpio TEGRA_GPIO(BB, 0) GPIO_ACTIVE_LOW>;
++			reset-gpios = <&gpio TEGRA_GPIO(BB, 7) GPIO_ACTIVE_LOW>;
+ 
+-			avdd-supply = <&vdd_cam1_ldo>;
++			avdd-supply = <&vdd_cam2_ldo>;
+ 			dovdd-supply = <&vdd_1v8_cam>;
+ 
+ 			orientation = <1>;
+@@ -387,7 +387,7 @@ rear_camera_output: endpoint {
+ 					bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+ 					data-lanes = <1>;
+ 					link-frequencies = /bits/ 64 <210000000>;
+-					remote-endpoint = <&csia_input>;
++					remote-endpoint = <&csib_input>;
+ 				};
+ 			};
+ 		};
+-- 
+2.47.3
+

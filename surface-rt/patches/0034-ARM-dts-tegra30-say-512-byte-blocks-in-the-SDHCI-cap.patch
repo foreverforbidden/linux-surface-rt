@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 01:10:55 +0000
+Subject: [PATCH 34/45] ARM: dts: tegra30: say 512-byte blocks in the SDHCI
+ capabilities
+
+The Tegra30 SDHCI controllers report a maximum block length of 3 in their
+capabilities, a value SDHCI reserves, and sdhci warns for each of them:
+"mmcN: Invalid maximum block size, assuming 512 bytes". Mask the field
+to 0 (512 bytes), the size sdhci already falls back to.
+---
+ arch/arm/boot/dts/nvidia/tegra30.dtsi | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30.dtsi b/arch/arm/boot/dts/nvidia/tegra30.dtsi
+index ed1bbf864..e825032e1 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30.dtsi
++++ b/arch/arm/boot/dts/nvidia/tegra30.dtsi
+@@ -1097,6 +1097,12 @@ mmc@78000000 {
+ 		reset-names = "sdhci";
+ 		power-domains = <&pd_core>;
+ 		operating-points-v2 = <&sdmmc1_dvfs_opp_table>;
++		/*
++		 * The capabilities report a maximum block length of 3, which
++		 * SDHCI reserves: say 512 bytes (0), what sdhci uses anyway.
++		 */
++		sdhci-caps-mask = /bits/ 64 <0x30000>;
++		sdhci-caps = /bits/ 64 <0x0>;
+ 		status = "disabled";
+ 	};
+ 
+@@ -1108,6 +1114,12 @@ mmc@78000200 {
+ 		clock-names = "sdhci";
+ 		resets = <&tegra_car 9>;
+ 		reset-names = "sdhci";
++		/*
++		 * The capabilities report a maximum block length of 3, which
++		 * SDHCI reserves: say 512 bytes (0), what sdhci uses anyway.
++		 */
++		sdhci-caps-mask = /bits/ 64 <0x30000>;
++		sdhci-caps = /bits/ 64 <0x0>;
+ 		status = "disabled";
+ 	};
+ 
+@@ -1121,6 +1133,12 @@ mmc@78000400 {
+ 		reset-names = "sdhci";
+ 		power-domains = <&pd_core>;
+ 		operating-points-v2 = <&sdmmc3_dvfs_opp_table>;
++		/*
++		 * The capabilities report a maximum block length of 3, which
++		 * SDHCI reserves: say 512 bytes (0), what sdhci uses anyway.
++		 */
++		sdhci-caps-mask = /bits/ 64 <0x30000>;
++		sdhci-caps = /bits/ 64 <0x0>;
+ 		status = "disabled";
+ 	};
+ 
+@@ -1132,6 +1150,12 @@ mmc@78000600 {
+ 		clock-names = "sdhci";
+ 		resets = <&tegra_car 15>;
+ 		reset-names = "sdhci";
++		/*
++		 * The capabilities report a maximum block length of 3, which
++		 * SDHCI reserves: say 512 bytes (0), what sdhci uses anyway.
++		 */
++		sdhci-caps-mask = /bits/ 64 <0x30000>;
++		sdhci-caps = /bits/ 64 <0x0>;
+ 		status = "disabled";
+ 	};
+ 
+-- 
+2.47.3
+

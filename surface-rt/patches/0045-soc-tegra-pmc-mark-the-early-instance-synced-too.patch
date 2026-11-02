@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 15:18:47 +0000
+Subject: [PATCH 45/45] soc/tegra: pmc: mark the early instance synced too
+
+tegra_pmc_sync_state() sets core_domain_state_synced on the probed tegra_pmc,
+but tegra_pmc_core_domain_state_synced() returns the flag of early_pmc, a
+separate static instance that only gets the rate and base copied over. The
+Tegra20/30 regulator couplers ask the latter, so they never see the core
+domain synced and hold the CORE rail at the bootloader voltage: 1.3 V on the
+Surface RT, and through max-spread the CPU at 1.0 V or more, while the core
+domain asks for 1.0-1.1 V and the CPU OPPs for 0.8 V.
+---
+ drivers/soc/tegra/pmc.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/soc/tegra/pmc.c b/drivers/soc/tegra/pmc.c
+index f8792b795..18e348609 100644
+--- a/drivers/soc/tegra/pmc.c
++++ b/drivers/soc/tegra/pmc.c
+@@ -4869,6 +4869,12 @@ static void tegra_pmc_sync_state(struct device *dev)
+ 	 * mark the domain as synced in this case.
+ 	 */
+ 	pmc->core_domain_state_synced = true;
++	/*
++	 * tegra_pmc_core_domain_state_synced() reads the early instance, which
++	 * is not the probed one: without this the regulator coupler never sees
++	 * the domain synced and keeps the CORE at the bootloader's voltage.
++	 */
++	early_pmc->core_domain_state_synced = true;
+ 
+ 	/* this is a no-op if core regulator isn't used */
+ 	mutex_lock(&pmc->powergates_lock);
+-- 
+2.47.3
+

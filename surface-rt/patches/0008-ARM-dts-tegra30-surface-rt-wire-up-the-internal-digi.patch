@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 18:18:02 +0000
+Subject: [PATCH 08/45] ARM: dts: tegra30: surface-rt: wire up the internal
+ digital microphones
+
+---
+ .../arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index 3e1c579b0..6570c63f7 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -237,6 +237,12 @@ wm8962: audio-codec@1a {
+ 			compatible = "wlf,wm8962";
+ 			reg = <0x1a>;
+ 
++			/*
++			 * Digital microphones (WM7220): DMICCLK on GPIO2, DMICDAT on
++			 * GPIO3, found by trying every pair (2026-10-28).
++			 */
++			gpio-cfg = <0x0000 0x0013 0x8014 0x0000 0x0000 0x0000>;
++
+ 			interrupt-parent = <&gpio>;
+ 			interrupts = <TEGRA_GPIO(W, 3) IRQ_TYPE_LEVEL_HIGH>;
+ 
+@@ -819,7 +825,8 @@ sound {
+ 			"Headphone Jack", "HPOUTR",
+ 			"Headphone Jack", "HPOUTL",
+ 			"Int Spk", "SPKOUTR",
+-			"Int Spk", "SPKOUTL";
++			"Int Spk", "SPKOUTL",
++			"DMICDAT", "Int Mic";
+ 
+ 		nvidia,i2s-controller = <&tegra_i2s1>;
+ 		nvidia,audio-codec = <&wm8962>;
+-- 
+2.47.3
+

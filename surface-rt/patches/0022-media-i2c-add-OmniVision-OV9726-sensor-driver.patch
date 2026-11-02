@@ -1,0 +1,869 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:43:19 +0000
+Subject: [PATCH 22/45] media: i2c: add OmniVision OV9726 sensor driver
+
+V4L2 subdev driver for the OV9726 (1280x720 RAW10 at 30 fps over one
+MIPI CSI-2 lane, 24 MHz XVCLK). Register settings come from the NVIDIA
+Tegra 3 (Cardhu) Android driver; exposure, analogue gain, vblank, flips
+and test pattern are exposed as controls. The sensor has no usable
+on-chip AEC, so exposure/gain must be driven from userspace.
+
+The register settings are those of NVIDIA's ov9726 driver for the Tegra
+Android kernel, android.googlesource.com/kernel/tegra, commit
+2268683075e741190919217a72fcf13eb174dc57,
+drivers/media/platform/tegra/ov9726.c (Copyright (c) 2011 - 2013,
+NVIDIA, GPL-2.0), with the output height set to 720 lines
+(0x034e/0x034f = 0x02d0 for its 0x02d8).
+---
+ drivers/media/i2c/Kconfig  |  11 +
+ drivers/media/i2c/Makefile |   1 +
+ drivers/media/i2c/ov9726.c | 802 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 814 insertions(+)
+ create mode 100644 drivers/media/i2c/ov9726.c
+
+diff --git a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
+index 5d173e0ec..e75e1d4b3 100644
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -725,6 +725,17 @@ config VIDEO_OV9650
+ 	  This is a V4L2 sensor driver for the Omnivision
+ 	  OV9650 and OV9652 camera sensors.
+ 
++config VIDEO_OV9726
++	tristate "OmniVision OV9726 sensor support"
++	depends on OF || COMPILE_TEST
++	select V4L2_CCI_I2C
++	help
++	  This is a Video4Linux2 sensor driver for the OmniVision
++	  OV9726 1280x800 RAW10 MIPI CSI-2 camera (Microsoft Surface RT).
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called ov9726.
++
+ config VIDEO_OV9734
+ 	tristate "OmniVision OV9734 sensor support"
+ 	depends on ACPI || COMPILE_TEST
+diff --git a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
+index e45359efe..93a650bec 100644
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -122,6 +122,7 @@ obj-$(CONFIG_VIDEO_OV8865) += ov8865.o
+ obj-$(CONFIG_VIDEO_OV9282) += ov9282.o
+ obj-$(CONFIG_VIDEO_OV9640) += ov9640.o
+ obj-$(CONFIG_VIDEO_OV9650) += ov9650.o
++obj-$(CONFIG_VIDEO_OV9726) += ov9726.o
+ obj-$(CONFIG_VIDEO_OV9734) += ov9734.o
+ obj-$(CONFIG_VIDEO_RDACM20) += rdacm20.o
+ obj-$(CONFIG_VIDEO_RDACM21) += rdacm21.o
+diff --git a/drivers/media/i2c/ov9726.c b/drivers/media/i2c/ov9726.c
+new file mode 100644
+index 000000000..d7c686c25
+--- /dev/null
++++ b/drivers/media/i2c/ov9726.c
+@@ -0,0 +1,802 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * OmniVision OV9726 1/6" 1280x800 RAW10 MIPI CSI-2 (1 lane) sensor driver
++ *
++ * Register settings are taken from the NVIDIA Tegra 3 (Cardhu) Android
++ * ov9726 driver, Copyright (c) 2011 NVIDIA (Charlie Huang).
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/regulator/consumer.h>
++#include <linux/units.h>
++#include <media/v4l2-cci.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-fwnode.h>
++
++#define OV9726_MCLK_FREQ_24MHZ		(24 * HZ_PER_MHZ)
++/* 24 MHz / 4 * 70 = 420 Mbps per lane, DDR -> 210 MHz link frequency */
++#define OV9726_LINK_FREQ_210MHZ		(210 * HZ_PER_MHZ)
++/* vt_pix_clk = 420 MHz / 1 / 10 */
++#define OV9726_PIXEL_RATE		(42 * HZ_PER_MHZ)
++
++#define OV9726_REG_MODEL_ID		CCI_REG16(0x0000)
++#define OV9726_MODEL_ID			0x9726
++
++#define OV9726_REG_MODE_SELECT		CCI_REG8(0x0100)
++#define OV9726_MODE_STANDBY		0x00
++#define OV9726_MODE_STREAMING		0x01
++
++#define OV9726_REG_ORIENTATION		CCI_REG8(0x0101)
++#define OV9726_ORIENTATION_HFLIP	BIT(0)
++#define OV9726_ORIENTATION_VFLIP	BIT(1)
++
++#define OV9726_REG_SOFTWARE_RESET	CCI_REG8(0x0103)
++#define OV9726_REG_GROUPED_HOLD		CCI_REG8(0x0104)
++
++#define OV9726_REG_EXPOSURE		CCI_REG16(0x0202)
++#define OV9726_EXPOSURE_MIN		1
++#define OV9726_EXPOSURE_MAX_MARGIN	4
++#define OV9726_EXPOSURE_DEFAULT		787
++
++#define OV9726_REG_ANALOGUE_GAIN	CCI_REG16(0x0204)
++#define OV9726_ANALOGUE_GAIN_MIN	0x10
++#define OV9726_ANALOGUE_GAIN_MAX	0xff
++#define OV9726_ANALOGUE_GAIN_DEFAULT	0x3f
++
++#define OV9726_REG_VTS			CCI_REG16(0x0340)
++#define OV9726_VTS_MAX			0xffff
++
++#define OV9726_REG_TEST_PATTERN		CCI_REG16(0x0600)
++
++
++#define to_ov9726(_sd)			container_of(_sd, struct ov9726, sd)
++
++static const s64 ov9726_link_freq_menu[] = {
++	OV9726_LINK_FREQ_210MHZ,
++};
++
++struct ov9726_mode {
++	u32 width;
++	u32 height;
++	u32 hts;
++	u32 vts;
++	const struct cci_reg_sequence *regs;
++	unsigned int num_regs;
++};
++
++static const char * const ov9726_test_pattern_menu[] = {
++	"Disabled",
++	"Solid Colour",
++	"Colour Bars",
++	"Fade To Grey Colour Bars",
++	"PN9",
++};
++
++static const char * const ov9726_supply_names[] = {
++	"avdd",		/* Analog power, 2.8 V */
++	"dovdd",	/* Digital I/O power, 1.8 V */
++};
++
++#define OV9726_NUM_SUPPLIES	ARRAY_SIZE(ov9726_supply_names)
++
++struct ov9726 {
++	struct device *dev;
++	struct regmap *regmap;
++	struct clk *xvclk;
++	struct gpio_desc *reset_gpio;
++	struct gpio_desc *powerdown_gpio;
++	struct regulator_bulk_data supplies[OV9726_NUM_SUPPLIES];
++
++	struct v4l2_subdev sd;
++	struct media_pad pad;
++
++	struct v4l2_ctrl_handler ctrl_handler;
++	struct v4l2_ctrl *vblank;
++	struct v4l2_ctrl *exposure;
++	struct v4l2_ctrl *hflip;
++	struct v4l2_ctrl *vflip;
++};
++
++/* 1280x720, 30 fps: line length 1664, frame length 840 */
++static const struct cci_reg_sequence ov9726_1280x720_regs[] = {
++	{ CCI_REG8(0x3026), 0x00 },
++	{ CCI_REG8(0x3027), 0x00 },
++	{ CCI_REG8(0x3705), 0x45 },
++	{ CCI_REG8(0x3603), 0xaa },
++	{ CCI_REG8(0x3632), 0x2f },
++	{ CCI_REG8(0x3620), 0x66 },
++	{ CCI_REG8(0x3621), 0xc0 },
++	{ CCI_REG8(0x3833), 0x04 },
++	{ CCI_REG8(0x3835), 0x02 },
++	{ CCI_REG8(0x4702), 0x04 },
++	{ CCI_REG8(0x4704), 0x00 },
++	{ CCI_REG8(0x4706), 0x08 },
++	{ CCI_REG8(0x5052), 0x01 },
++	{ CCI_REG8(0x3819), 0x6c },
++	{ CCI_REG8(0x3817), 0x94 },
++	{ CCI_REG8(0x404e), 0x7e },
++	{ CCI_REG8(0x3601), 0x40 },
++	{ CCI_REG8(0x3610), 0xa0 },
++	/* window: (0, 40) 1280x720 */
++	{ CCI_REG8(0x0344), 0x00 },
++	{ CCI_REG8(0x0345), 0x00 },
++	{ CCI_REG8(0x0346), 0x00 },
++	{ CCI_REG8(0x0347), 0x28 },
++	{ CCI_REG8(0x034c), 0x05 },
++	{ CCI_REG8(0x034d), 0x00 },
++	{ CCI_REG8(0x034e), 0x02 },
++	{ CCI_REG8(0x034f), 0xd0 },
++	{ CCI_REG8(0x3002), 0x00 },
++	{ CCI_REG8(0x3004), 0x00 },
++	{ CCI_REG8(0x3005), 0x00 },
++	/* MIPI */
++	{ CCI_REG8(0x4800), 0x44 },
++	{ CCI_REG8(0x4801), 0x0f },
++	{ CCI_REG8(0x4803), 0x05 },
++	{ CCI_REG8(0x4601), 0x16 },
++	{ CCI_REG8(0x3014), 0x05 },
++	{ CCI_REG8(0x3707), 0x14 },
++	{ CCI_REG8(0x3622), 0x9f },
++	{ CCI_REG8(0x4002), 0x45 },
++	{ CCI_REG8(0x5001), 0x00 },
++	{ CCI_REG8(0x3406), 0x01 },
++	{ CCI_REG8(0x3503), 0x17 },
++	/* RAW10 */
++	{ CCI_REG8(0x0112), 0x0a },
++	{ CCI_REG8(0x0113), 0x0a },
++	{ CCI_REG8(0x3013), 0x20 },
++	{ CCI_REG8(0x4837), 0x2f },
++	{ CCI_REG8(0x3615), 0xf0 },
++	/* line length 1664 */
++	{ CCI_REG8(0x0342), 0x06 },
++	{ CCI_REG8(0x0343), 0x80 },
++	{ CCI_REG8(0x3702), 0x1e },
++	{ CCI_REG8(0x3703), 0x3c },
++	{ CCI_REG8(0x3704), 0x0e },
++	/* PLL: 24 MHz / 4 * 70 = 420 MHz, vt_pix_clk 42 MHz */
++	{ CCI_REG8(0x3104), 0x20 },
++	{ CCI_REG8(0x0305), 0x04 },
++	{ CCI_REG8(0x0307), 0x46 },
++	{ CCI_REG8(0x0303), 0x01 },
++	{ CCI_REG8(0x0301), 0x0a },
++	{ CCI_REG8(0x3010), 0x01 },
++	{ CCI_REG8(0x460e), 0x00 },
++	{ CCI_REG8(0x5000), 0x00 },
++	{ CCI_REG8(0x5002), 0x00 },
++	{ CCI_REG8(0x3017), 0xd2 },
++	{ CCI_REG8(0x3018), 0x69 },
++	{ CCI_REG8(0x3019), 0x96 },
++	{ CCI_REG8(0x5047), 0x61 },
++	{ CCI_REG8(0x3604), 0x1c },
++	{ CCI_REG8(0x3602), 0x10 },
++	{ CCI_REG8(0x3612), 0x21 },
++	{ CCI_REG8(0x3630), 0x0a },
++	{ CCI_REG8(0x3631), 0x53 },
++	{ CCI_REG8(0x3633), 0x70 },
++	{ CCI_REG8(0x4005), 0x1a },
++	{ CCI_REG8(0x4009), 0x10 },
++};
++
++static const struct ov9726_mode supported_modes[] = {
++	{
++		.width = 1280,
++		.height = 720,
++		.hts = 1664,
++		.vts = 840,
++		.regs = ov9726_1280x720_regs,
++		.num_regs = ARRAY_SIZE(ov9726_1280x720_regs),
++	},
++};
++
++static u32 ov9726_get_format_code(struct ov9726 *ov9726)
++{
++	static const u32 codes[2][2] = {
++		/* hflip = 0, 1 */
++		{ MEDIA_BUS_FMT_SBGGR10_1X10, MEDIA_BUS_FMT_SGBRG10_1X10 },
++		{ MEDIA_BUS_FMT_SGRBG10_1X10, MEDIA_BUS_FMT_SRGGB10_1X10 },
++	};
++
++	/*
++	 * The vendor settings set ORIENTATION = HFLIP, which is reported as
++	 * "unflipped" here.
++	 */
++	return codes[ov9726->vflip ? ov9726->vflip->val : 0]
++		    [ov9726->hflip ? ov9726->hflip->val : 0];
++}
++
++static int ov9726_set_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct ov9726 *ov9726 = container_of(ctrl->handler, struct ov9726,
++					     ctrl_handler);
++	const struct ov9726_mode *mode = &supported_modes[0];
++	s64 exposure_max;
++	u64 val;
++	int ret = 0;
++
++	if (ctrl->id == V4L2_CID_VBLANK) {
++		exposure_max = ctrl->val + mode->height -
++			       OV9726_EXPOSURE_MAX_MARGIN;
++		ret = __v4l2_ctrl_modify_range(ov9726->exposure,
++					       ov9726->exposure->minimum,
++					       exposure_max,
++					       ov9726->exposure->step,
++					       min(ov9726->exposure->default_value,
++						   exposure_max));
++		if (ret)
++			return ret;
++	}
++
++	if (!pm_runtime_get_if_active(ov9726->dev))
++		return 0;
++
++	switch (ctrl->id) {
++	case V4L2_CID_ANALOGUE_GAIN:
++		ret = cci_write(ov9726->regmap, OV9726_REG_ANALOGUE_GAIN,
++				ctrl->val, NULL);
++		break;
++	case V4L2_CID_EXPOSURE:
++		ret = cci_write(ov9726->regmap, OV9726_REG_EXPOSURE,
++				ctrl->val, NULL);
++		break;
++	case V4L2_CID_VBLANK:
++		ret = cci_write(ov9726->regmap, OV9726_REG_VTS,
++				ctrl->val + mode->height, NULL);
++		break;
++	case V4L2_CID_HFLIP:
++	case V4L2_CID_VFLIP:
++		/* vendor default (HFLIP bit set) is our "unflipped" */
++		val = 0;
++		if (!ov9726->hflip->val)
++			val |= OV9726_ORIENTATION_HFLIP;
++		if (ov9726->vflip->val)
++			val |= OV9726_ORIENTATION_VFLIP;
++		ret = cci_write(ov9726->regmap, OV9726_REG_ORIENTATION, val,
++				NULL);
++		break;
++	case V4L2_CID_TEST_PATTERN:
++		ret = cci_write(ov9726->regmap, OV9726_REG_TEST_PATTERN,
++				ctrl->val, NULL);
++		break;
++	default:
++		ret = -EINVAL;
++		break;
++	}
++
++	pm_runtime_put(ov9726->dev);
++
++	return ret;
++}
++
++static const struct v4l2_ctrl_ops ov9726_ctrl_ops = {
++	.s_ctrl = ov9726_set_ctrl,
++};
++
++static int ov9726_init_controls(struct ov9726 *ov9726)
++{
++	struct v4l2_ctrl_handler *hdl = &ov9726->ctrl_handler;
++	const struct ov9726_mode *mode = &supported_modes[0];
++	struct v4l2_fwnode_device_properties props;
++	s64 h_blank, v_blank;
++	struct v4l2_ctrl *ctrl;
++	int ret;
++
++	v4l2_ctrl_handler_init(hdl, 10);
++
++	ctrl = v4l2_ctrl_new_int_menu(hdl, &ov9726_ctrl_ops, V4L2_CID_LINK_FREQ,
++				      ARRAY_SIZE(ov9726_link_freq_menu) - 1, 0,
++				      ov9726_link_freq_menu);
++	if (ctrl)
++		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops, V4L2_CID_PIXEL_RATE,
++			  OV9726_PIXEL_RATE, OV9726_PIXEL_RATE, 1,
++			  OV9726_PIXEL_RATE);
++
++	h_blank = mode->hts - mode->width;
++	ctrl = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops, V4L2_CID_HBLANK,
++				 h_blank, h_blank, 1, h_blank);
++	if (ctrl)
++		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++
++	v_blank = mode->vts - mode->height;
++	ov9726->vblank = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
++					   V4L2_CID_VBLANK, v_blank,
++					   OV9726_VTS_MAX - mode->height, 1,
++					   v_blank);
++
++	ov9726->exposure = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
++					     V4L2_CID_EXPOSURE,
++					     OV9726_EXPOSURE_MIN,
++					     mode->vts - OV9726_EXPOSURE_MAX_MARGIN,
++					     1, OV9726_EXPOSURE_DEFAULT);
++
++	v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
++					 V4L2_CID_ANALOGUE_GAIN,
++					 OV9726_ANALOGUE_GAIN_MIN,
++					 OV9726_ANALOGUE_GAIN_MAX, 1,
++					 OV9726_ANALOGUE_GAIN_DEFAULT);
++
++	ov9726->hflip = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
++					  V4L2_CID_HFLIP, 0, 1, 1, 0);
++	ov9726->vflip = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
++					  V4L2_CID_VFLIP, 0, 1, 1, 0);
++
++	v4l2_ctrl_new_std_menu_items(hdl, &ov9726_ctrl_ops,
++				     V4L2_CID_TEST_PATTERN,
++				     ARRAY_SIZE(ov9726_test_pattern_menu) - 1,
++				     0, 0, ov9726_test_pattern_menu);
++
++	if (hdl->error) {
++		ret = hdl->error;
++		goto error_free_hdlr;
++	}
++
++	if (ov9726->hflip)
++		ov9726->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++	if (ov9726->vflip)
++		ov9726->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
++
++	ret = v4l2_fwnode_device_parse(ov9726->dev, &props);
++	if (ret)
++		goto error_free_hdlr;
++
++	ret = v4l2_ctrl_new_fwnode_properties(hdl, &ov9726_ctrl_ops, &props);
++	if (ret)
++		goto error_free_hdlr;
++
++	ov9726->sd.ctrl_handler = hdl;
++
++	return 0;
++
++error_free_hdlr:
++	v4l2_ctrl_handler_free(hdl);
++
++	return ret;
++}
++
++static void ov9726_update_pad_format(struct ov9726 *ov9726,
++				     const struct ov9726_mode *mode,
++				     struct v4l2_mbus_framefmt *fmt)
++{
++	fmt->code = ov9726_get_format_code(ov9726);
++	fmt->width = mode->width;
++	fmt->height = mode->height;
++	fmt->field = V4L2_FIELD_NONE;
++	fmt->colorspace = V4L2_COLORSPACE_RAW;
++	fmt->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
++	fmt->quantization = V4L2_QUANTIZATION_FULL_RANGE;
++	fmt->xfer_func = V4L2_XFER_FUNC_NONE;
++}
++
++static int ov9726_enable_streams(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state, u32 pad,
++				 u64 streams_mask)
++{
++	const struct ov9726_mode *mode = &supported_modes[0];
++	struct ov9726 *ov9726 = to_ov9726(sd);
++	int ret;
++
++	ret = pm_runtime_resume_and_get(ov9726->dev);
++	if (ret)
++		return ret;
++
++	ret = cci_write(ov9726->regmap, OV9726_REG_SOFTWARE_RESET, 0x01, NULL);
++	if (ret)
++		goto error;
++	usleep_range(10000, 11000);
++
++	ret = cci_multi_reg_write(ov9726->regmap, mode->regs, mode->num_regs,
++				  NULL);
++	if (ret) {
++		dev_err(ov9726->dev, "failed to set mode: %d\n", ret);
++		goto error;
++	}
++
++	ret = __v4l2_ctrl_handler_setup(ov9726->sd.ctrl_handler);
++	if (ret)
++		goto error;
++
++	ret = cci_write(ov9726->regmap, OV9726_REG_MODE_SELECT,
++			OV9726_MODE_STREAMING, NULL);
++	if (ret) {
++		dev_err(ov9726->dev, "failed to start streaming: %d\n", ret);
++		goto error;
++	}
++
++	__v4l2_ctrl_grab(ov9726->hflip, true);
++	__v4l2_ctrl_grab(ov9726->vflip, true);
++
++	return 0;
++
++error:
++	pm_runtime_put_autosuspend(ov9726->dev);
++
++	return ret;
++}
++
++static int ov9726_disable_streams(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *state, u32 pad,
++				  u64 streams_mask)
++{
++	struct ov9726 *ov9726 = to_ov9726(sd);
++	int ret;
++
++	ret = cci_write(ov9726->regmap, OV9726_REG_MODE_SELECT,
++			OV9726_MODE_STANDBY, NULL);
++	if (ret)
++		dev_err(ov9726->dev, "failed to stop streaming: %d\n", ret);
++
++	__v4l2_ctrl_grab(ov9726->hflip, false);
++	__v4l2_ctrl_grab(ov9726->vflip, false);
++
++	pm_runtime_put_autosuspend(ov9726->dev);
++
++	return ret;
++}
++
++static int ov9726_set_pad_format(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *state,
++				 struct v4l2_subdev_format *fmt)
++{
++	struct ov9726 *ov9726 = to_ov9726(sd);
++	const struct ov9726_mode *mode;
++
++	mode = v4l2_find_nearest_size(supported_modes,
++				      ARRAY_SIZE(supported_modes),
++				      width, height,
++				      fmt->format.width, fmt->format.height);
++
++	ov9726_update_pad_format(ov9726, mode, &fmt->format);
++	*v4l2_subdev_state_get_format(state, 0) = fmt->format;
++
++	return 0;
++}
++
++static int ov9726_enum_mbus_code(struct v4l2_subdev *sd,
++				 struct v4l2_subdev_state *sd_state,
++				 struct v4l2_subdev_mbus_code_enum *code)
++{
++	if (code->index > 0)
++		return -EINVAL;
++
++	code->code = ov9726_get_format_code(to_ov9726(sd));
++
++	return 0;
++}
++
++static int ov9726_enum_frame_size(struct v4l2_subdev *sd,
++				  struct v4l2_subdev_state *sd_state,
++				  struct v4l2_subdev_frame_size_enum *fse)
++{
++	if (fse->index >= ARRAY_SIZE(supported_modes))
++		return -EINVAL;
++
++	if (fse->code != ov9726_get_format_code(to_ov9726(sd)))
++		return -EINVAL;
++
++	fse->min_width = supported_modes[fse->index].width;
++	fse->max_width = fse->min_width;
++	fse->min_height = supported_modes[fse->index].height;
++	fse->max_height = fse->min_height;
++
++	return 0;
++}
++
++static int ov9726_init_state(struct v4l2_subdev *sd,
++			     struct v4l2_subdev_state *state)
++{
++	struct v4l2_subdev_format fmt = {
++		.which = V4L2_SUBDEV_FORMAT_TRY,
++		.pad = 0,
++		.format = {
++			.width = supported_modes[0].width,
++			.height = supported_modes[0].height,
++		},
++	};
++
++	return ov9726_set_pad_format(sd, state, &fmt);
++}
++
++static const struct v4l2_subdev_video_ops ov9726_video_ops = {
++	.s_stream = v4l2_subdev_s_stream_helper,
++};
++
++static const struct v4l2_subdev_pad_ops ov9726_pad_ops = {
++	.set_fmt = ov9726_set_pad_format,
++	.get_fmt = v4l2_subdev_get_fmt,
++	.enum_mbus_code = ov9726_enum_mbus_code,
++	.enum_frame_size = ov9726_enum_frame_size,
++	.enable_streams = ov9726_enable_streams,
++	.disable_streams = ov9726_disable_streams,
++};
++
++static const struct v4l2_subdev_ops ov9726_subdev_ops = {
++	.video = &ov9726_video_ops,
++	.pad = &ov9726_pad_ops,
++};
++
++static const struct v4l2_subdev_internal_ops ov9726_internal_ops = {
++	.init_state = ov9726_init_state,
++};
++
++static const struct media_entity_operations ov9726_subdev_entity_ops = {
++	.link_validate = v4l2_subdev_link_validate,
++};
++
++static int ov9726_identify_sensor(struct ov9726 *ov9726)
++{
++	u64 val;
++	int ret;
++
++	ret = cci_read(ov9726->regmap, OV9726_REG_MODEL_ID, &val, NULL);
++	if (ret)
++		return dev_err_probe(ov9726->dev, ret,
++				     "failed to read model id\n");
++
++	if (val != OV9726_MODEL_ID)
++		return dev_err_probe(ov9726->dev, -ENODEV,
++				     "model id mismatch: %x != %llx\n",
++				     OV9726_MODEL_ID, val);
++
++	return 0;
++}
++
++static int ov9726_check_hwcfg(struct ov9726 *ov9726)
++{
++	struct fwnode_handle *fwnode = dev_fwnode(ov9726->dev), *ep;
++	struct v4l2_fwnode_endpoint bus_cfg = {
++		.bus_type = V4L2_MBUS_CSI2_DPHY,
++	};
++	unsigned long freq_bitmap;
++	int ret;
++
++	if (!fwnode)
++		return -ENODEV;
++
++	ep = fwnode_graph_get_next_endpoint(fwnode, NULL);
++	if (!ep)
++		return -EINVAL;
++
++	ret = v4l2_fwnode_endpoint_alloc_parse(ep, &bus_cfg);
++	fwnode_handle_put(ep);
++	if (ret)
++		return ret;
++
++	if (bus_cfg.bus.mipi_csi2.num_data_lanes != 1) {
++		ret = dev_err_probe(ov9726->dev, -EINVAL,
++				    "only 1 data lane is supported\n");
++		goto out;
++	}
++
++	ret = v4l2_link_freq_to_bitmap(ov9726->dev, bus_cfg.link_frequencies,
++				       bus_cfg.nr_of_link_frequencies,
++				       ov9726_link_freq_menu,
++				       ARRAY_SIZE(ov9726_link_freq_menu),
++				       &freq_bitmap);
++out:
++	v4l2_fwnode_endpoint_free(&bus_cfg);
++
++	return ret;
++}
++
++static int ov9726_power_on(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct ov9726 *ov9726 = to_ov9726(sd);
++	int ret;
++
++	gpiod_set_value_cansleep(ov9726->reset_gpio, 1);
++
++	/* dovdd before avdd, as in the vendor sequence */
++	ret = regulator_enable(ov9726->supplies[1].consumer);
++	if (ret)
++		return ret;
++	usleep_range(1000, 2000);
++	ret = regulator_enable(ov9726->supplies[0].consumer);
++	if (ret)
++		goto disable_dovdd;
++
++	ret = clk_prepare_enable(ov9726->xvclk);
++	if (ret)
++		goto disable_avdd;
++
++	usleep_range(3000, 4000);
++	gpiod_set_value_cansleep(ov9726->powerdown_gpio, 0);
++	usleep_range(5000, 6000);
++	gpiod_set_value_cansleep(ov9726->reset_gpio, 0);
++	/* 8192 XVCLK cycles before the first SCCB transaction, be generous */
++	usleep_range(20000, 21000);
++
++	return 0;
++
++disable_avdd:
++	regulator_disable(ov9726->supplies[0].consumer);
++disable_dovdd:
++	regulator_disable(ov9726->supplies[1].consumer);
++
++	return ret;
++}
++
++static int ov9726_power_off(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++	struct ov9726 *ov9726 = to_ov9726(sd);
++
++	gpiod_set_value_cansleep(ov9726->reset_gpio, 1);
++	gpiod_set_value_cansleep(ov9726->powerdown_gpio, 1);
++	clk_disable_unprepare(ov9726->xvclk);
++	regulator_disable(ov9726->supplies[0].consumer);
++	regulator_disable(ov9726->supplies[1].consumer);
++
++	return 0;
++}
++
++static int ov9726_probe(struct i2c_client *client)
++{
++	struct ov9726 *ov9726;
++	unsigned long freq;
++	unsigned int i;
++	int ret;
++
++	ov9726 = devm_kzalloc(&client->dev, sizeof(*ov9726), GFP_KERNEL);
++	if (!ov9726)
++		return -ENOMEM;
++
++	ov9726->dev = &client->dev;
++
++	v4l2_i2c_subdev_init(&ov9726->sd, client, &ov9726_subdev_ops);
++
++	ov9726->regmap = devm_cci_regmap_init_i2c(client, 16);
++	if (IS_ERR(ov9726->regmap))
++		return dev_err_probe(ov9726->dev, PTR_ERR(ov9726->regmap),
++				     "failed to init CCI\n");
++
++	ov9726->xvclk = devm_v4l2_sensor_clk_get(ov9726->dev, NULL);
++	if (IS_ERR(ov9726->xvclk))
++		return dev_err_probe(ov9726->dev, PTR_ERR(ov9726->xvclk),
++				     "failed to get XVCLK clock\n");
++
++	freq = clk_get_rate(ov9726->xvclk);
++	if (freq && freq != OV9726_MCLK_FREQ_24MHZ)
++		return dev_err_probe(ov9726->dev, -EINVAL,
++				     "XVCLK frequency %lu is not supported\n",
++				     freq);
++
++	ret = ov9726_check_hwcfg(ov9726);
++	if (ret)
++		return dev_err_probe(ov9726->dev, ret,
++				     "failed to check HW configuration\n");
++
++	ov9726->reset_gpio = devm_gpiod_get_optional(ov9726->dev, "reset",
++						     GPIOD_OUT_HIGH);
++	if (IS_ERR(ov9726->reset_gpio))
++		return dev_err_probe(ov9726->dev, PTR_ERR(ov9726->reset_gpio),
++				     "cannot get reset GPIO\n");
++
++	ov9726->powerdown_gpio = devm_gpiod_get_optional(ov9726->dev,
++							 "powerdown",
++							 GPIOD_OUT_HIGH);
++	if (IS_ERR(ov9726->powerdown_gpio))
++		return dev_err_probe(ov9726->dev,
++				     PTR_ERR(ov9726->powerdown_gpio),
++				     "cannot get powerdown GPIO\n");
++
++	for (i = 0; i < OV9726_NUM_SUPPLIES; i++)
++		ov9726->supplies[i].supply = ov9726_supply_names[i];
++
++	ret = devm_regulator_bulk_get(ov9726->dev, OV9726_NUM_SUPPLIES,
++				      ov9726->supplies);
++	if (ret)
++		return dev_err_probe(ov9726->dev, ret,
++				     "failed to get supply regulators\n");
++
++	ret = ov9726_power_on(ov9726->dev);
++	if (ret)
++		return ret;
++
++	ret = ov9726_identify_sensor(ov9726);
++	if (ret)
++		goto power_off;
++
++	ret = ov9726_init_controls(ov9726);
++	if (ret) {
++		dev_err_probe(ov9726->dev, ret, "failed to init controls\n");
++		goto power_off;
++	}
++
++	ov9726->sd.state_lock = ov9726->ctrl_handler.lock;
++	ov9726->sd.internal_ops = &ov9726_internal_ops;
++	ov9726->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
++	ov9726->sd.entity.ops = &ov9726_subdev_entity_ops;
++	ov9726->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;
++	ov9726->pad.flags = MEDIA_PAD_FL_SOURCE;
++
++	ret = media_entity_pads_init(&ov9726->sd.entity, 1, &ov9726->pad);
++	if (ret) {
++		dev_err_probe(ov9726->dev, ret, "failed to init entity pads\n");
++		goto v4l2_ctrl_handler_free;
++	}
++
++	ret = v4l2_subdev_init_finalize(&ov9726->sd);
++	if (ret < 0) {
++		dev_err_probe(ov9726->dev, ret, "failed to init subdev\n");
++		goto media_entity_cleanup;
++	}
++
++	pm_runtime_set_active(ov9726->dev);
++	pm_runtime_enable(ov9726->dev);
++
++	ret = v4l2_async_register_subdev_sensor(&ov9726->sd);
++	if (ret < 0) {
++		dev_err_probe(ov9726->dev, ret,
++			      "failed to register V4L2 subdev\n");
++		goto subdev_cleanup;
++	}
++
++	pm_runtime_idle(ov9726->dev);
++	pm_runtime_set_autosuspend_delay(ov9726->dev, 1000);
++	pm_runtime_use_autosuspend(ov9726->dev);
++
++	return 0;
++
++subdev_cleanup:
++	v4l2_subdev_cleanup(&ov9726->sd);
++	pm_runtime_disable(ov9726->dev);
++	pm_runtime_set_suspended(ov9726->dev);
++media_entity_cleanup:
++	media_entity_cleanup(&ov9726->sd.entity);
++v4l2_ctrl_handler_free:
++	v4l2_ctrl_handler_free(ov9726->sd.ctrl_handler);
++power_off:
++	ov9726_power_off(ov9726->dev);
++
++	return ret;
++}
++
++static void ov9726_remove(struct i2c_client *client)
++{
++	struct v4l2_subdev *sd = i2c_get_clientdata(client);
++	struct ov9726 *ov9726 = to_ov9726(sd);
++
++	v4l2_async_unregister_subdev(sd);
++	v4l2_subdev_cleanup(sd);
++	media_entity_cleanup(&sd->entity);
++	v4l2_ctrl_handler_free(sd->ctrl_handler);
++	pm_runtime_disable(ov9726->dev);
++
++	if (!pm_runtime_status_suspended(ov9726->dev)) {
++		ov9726_power_off(ov9726->dev);
++		pm_runtime_set_suspended(ov9726->dev);
++	}
++}
++
++static const struct dev_pm_ops ov9726_pm_ops = {
++	SET_RUNTIME_PM_OPS(ov9726_power_off, ov9726_power_on, NULL)
++};
++
++static const struct of_device_id ov9726_of_match[] = {
++	{ .compatible = "ovti,ov9726" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, ov9726_of_match);
++
++static struct i2c_driver ov9726_i2c_driver = {
++	.driver = {
++		.name = "ov9726",
++		.pm = &ov9726_pm_ops,
++		.of_match_table = ov9726_of_match,
++	},
++	.probe = ov9726_probe,
++	.remove = ov9726_remove,
++};
++
++module_i2c_driver(ov9726_i2c_driver);
++
++MODULE_DESCRIPTION("OmniVision OV9726 sensor driver");
++MODULE_LICENSE("GPL");
+-- 
+2.47.3
+

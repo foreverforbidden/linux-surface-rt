@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 01:10:55 +0000
+Subject: [PATCH 35/45] ARM: dts: tegra30: surface-rt: describe the HDMI, LVDS,
+ touchscreen and NCT1008 supplies
+
+These left their supplies out ("// ... TODO"), so each probe said "supply
+X not found, using dummy regulator". Describe them with the rails they
+are on, as on the other TPS65911 Tegra30 boards (Cardhu, Transformers):
+AVDD_HDMI and the LVDS encoder on the 3.3 V system rail, AVDD_HDMI_PLL on
+VIO (1.8 V), the HDMI connector's 5 V on the 5 V system rail, the
+touchscreen's VDD/VDDIO on 3.3 V/VIO, the NCT1008 on 3.3 V. All of them
+are always on. In the firmware's ACPI tables (Open Surface RT wiki:
+https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt,
+SSDT0000.ASL), the touchscreen's power resource \_SB.PRTU gates nothing
+and \_SB.GFXC.HDMI has no power resource.
+---
+ .../nvidia/tegra30-microsoft-surface-rt.dts   | 27 ++++++++++++++-----
+ 1 file changed, 20 insertions(+), 7 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index e72b564db..60bcae792 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -54,9 +54,17 @@ lcd_output: endpoint {
+ 		hdmi: hdmi@54280000 {
+ 			status = "okay";
+ 
+-			// hdmi-supply TODO
+-			// pll-supply TODO
+-			// vdd-supply TODO
++			/*
++			 * As on the other TPS65911 Tegra30 boards (Cardhu,
++			 * Transformers): AVDD_HDMI from the 3.3 V system rail,
++			 * AVDD_HDMI_PLL from VIO (1.8 V). The connector's 5 V
++			 * has no gate in the firmware's ACPI tables (no power
++			 * resource for \_SB.GFXC.HDMI; Open Surface RT wiki: https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt), so it is the always-on
++			 * 5 V system rail.
++			 */
++			hdmi-supply = <&vdd_5v0_sys>;
++			pll-supply = <&vdd_1v8_vio>;
++			vdd-supply = <&vdd_3v3_sys>;
+ 
+ 			port {
+ 				hdmi_out: endpoint {
+@@ -303,8 +311,13 @@ touchscreen@5b {
+ 			interrupt-parent = <&gpio>;
+ 			interrupts = <TEGRA_GPIO(K, 2) IRQ_TYPE_LEVEL_LOW>;
+ 
+-			// vdd-supply TODO
+-			// vddl-supply TODO
++			/*
++			 * mXT1386E: VDD 3.3 V, VDDIO 1.8 V. In the firmware's ACPI tables (Open Surface RT wiki: https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt) the power
++			 * resource (\_SB.PRTU) gates nothing: its _ON/_OFF only
++			 * flip a flag, so both are the always-on rails.
++			 */
++			vdd-supply = <&vdd_3v3_sys>;
++			vddl-supply = <&vdd_1v8_vio>;
+ 		};
+ 	};
+ 
+@@ -550,7 +563,7 @@ nct1008: temperature-sensor@4c {
+ 			interrupt-parent = <&gpio>;
+ 			interrupts = <TEGRA_GPIO(DD, 3) IRQ_TYPE_EDGE_FALLING>;
+ 
+-			// vcc-supply TODO
++			vcc-supply = <&vdd_3v3_sys>;
+ 			#thermal-sensor-cells = <1>;
+ 		};
+ 
+@@ -812,7 +825,7 @@ lvds-encoder {
+ 		compatible = "idt,v103", "lvds-encoder";
+ 
+ 		powerdown-gpios = <&gpio TEGRA_GPIO(B, 2) GPIO_ACTIVE_LOW>;
+-		// power-supply TODO
++		power-supply = <&vdd_3v3_sys>;
+ 
+ 		ports {
+ 			#address-cells = <1>;
+-- 
+2.47.3
+

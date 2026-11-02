@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 14:51:30 +0000
+Subject: [PATCH 33/45] ARM: tegra: surface-rt: the front camera (CAM1) is
+ mounted upright
+
+Only the rear camera (CAM2) is mounted upside down; a capture from CAM1
+with rotation 180 came out upside down.
+---
+ arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index 123c1f7c2..e72b564db 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -337,8 +337,8 @@ front_camera: camera@10 {
+ 			dovdd-supply = <&vdd_1v8_cam>;
+ 
+ 			orientation = <0>;
+-			/* both modules are mounted upside down (CAM2 verified) */
+-			rotation = <180>;
++			/* mounted upright; the rear module (CAM2) is upside down (both verified) */
++			rotation = <0>;
+ 
+ 			port {
+ 				front_camera_output: endpoint {
+-- 
+2.47.3
+

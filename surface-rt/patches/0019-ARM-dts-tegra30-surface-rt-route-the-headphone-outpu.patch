@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:30:27 +0000
+Subject: [PATCH 19/45] ARM: dts: tegra30: surface-rt: route the headphone
+ outputs to the jack-switched pin
+
+The machine driver toggles the DAPM pins "Headphone" and "Headphones" from
+the hp-det GPIO, but the routing used the "Headphone Jack" widget, which no
+jack controls. The headphone path was therefore always powered with the
+DAC and the "Headphones Switch" control did nothing. Route HPOUTL/R to
+"Headphones" so the jack powers the headphone driver up and down.
+---
+ arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index c8ec47ae1..2f7a62306 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -819,8 +819,8 @@ sound {
+ 		nvidia,model = "Microsoft Surface RT WM8962";
+ 
+ 		nvidia,audio-routing =
+-			"Headphone Jack", "HPOUTR",
+-			"Headphone Jack", "HPOUTL",
++			"Headphones", "HPOUTR",
++			"Headphones", "HPOUTL",
+ 			"Int Spk", "SPKOUTR",
+ 			"Int Spk", "SPKOUTL",
+ 			"DMICDAT", "Int Mic";
+-- 
+2.47.3
+

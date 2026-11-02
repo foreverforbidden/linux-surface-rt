@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 01:10:56 +0000
+Subject: [PATCH 40/45] gpio: tegra: allocate the GPIO base dynamically
+
+gpiolib warns "Static allocation of GPIO base is deprecated" for the
+fixed base 0. Every in-tree user goes through descriptors; the legacy
+sysfs numbers move (tegra-gpio now starts at the first dynamic base).
+---
+ drivers/gpio/gpio-tegra.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpio/gpio-tegra.c b/drivers/gpio/gpio-tegra.c
+index fa6c8ee92..4a1b7db7e 100644
+--- a/drivers/gpio/gpio-tegra.c
++++ b/drivers/gpio/gpio-tegra.c
+@@ -708,7 +708,7 @@ static int tegra_gpio_probe(struct platform_device *pdev)
+ 	tgi->gc.direction_output	= tegra_gpio_direction_output;
+ 	tgi->gc.set			= tegra_gpio_set;
+ 	tgi->gc.get_direction		= tegra_gpio_get_direction;
+-	tgi->gc.base			= 0;
++	tgi->gc.base			= -1;
+ 	tgi->gc.ngpio			= tgi->bank_count * 32;
+ 	tgi->gc.parent			= &pdev->dev;
+ 
+-- 
+2.47.3
+

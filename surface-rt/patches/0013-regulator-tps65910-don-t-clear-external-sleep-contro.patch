@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 09:46:19 +0000
+Subject: [PATCH 13/45] regulator: tps65910: don't clear external sleep control
+ on power-off either
+
+Power-off hung the same way as restart: the SoC froze in tps65910_shutdown()
+before the PMIC power-off handler (DEV_OFF) ran, leaving the board powered
+(USB still on) until a long press of the power button. Switching off through
+the PMIC brings it up from a clean state on the next power-on, and the
+firmware sets up the external control lines again at boot.
+---
+ drivers/regulator/tps65910-regulator.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/regulator/tps65910-regulator.c b/drivers/regulator/tps65910-regulator.c
+index f31104d07..80d1e66ae 100644
+--- a/drivers/regulator/tps65910-regulator.c
++++ b/drivers/regulator/tps65910-regulator.c
+@@ -1227,12 +1227,13 @@ static void tps65910_shutdown(struct platform_device *pdev)
+ 	int i;
+ 
+ 	/*
+-	 * A restart goes through the PMIC itself (DEV_OFF_RST), which resets
+-	 * these registers anyway. On the Microsoft Surface RT, whose vdd_cpu
+-	 * is under EN1 external control, clearing the external control here
+-	 * hangs the SoC before the restart handler runs.
++	 * Restart and power-off go through the PMIC itself (DEV_OFF_RST,
++	 * DEV_OFF), which brings these registers up from a clean state. On the
++	 * Microsoft Surface RT, whose vdd_cpu is under EN1 external control,
++	 * clearing the external control here hangs the SoC before the restart
++	 * or power-off handler runs.
+ 	 */
+-	if (system_state == SYSTEM_RESTART)
++	if (system_state == SYSTEM_RESTART || system_state == SYSTEM_POWER_OFF)
+ 		return;
+ 
+ 	/*
+-- 
+2.47.3
+

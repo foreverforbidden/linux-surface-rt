@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 13:51:03 +0000
+Subject: [PATCH 26/45] media: i2c: ov9726: fix Bayer order and gain, drop test
+ pattern
+
+Bayer order is GBRG with the vendor (mirrored) readout (checked against a
+real scene); the gain register uses the OmniVision coarse/fine format, so
+expose a linear 1x..15.5x control and convert it; the SMIA test pattern
+register only produced black frames, so drop the control; program the
+CSI data format register explicitly.
+---
+ drivers/media/i2c/ov9726.c | 69 ++++++++++++++++++++------------------
+ 1 file changed, 37 insertions(+), 32 deletions(-)
+
+diff --git a/drivers/media/i2c/ov9726.c b/drivers/media/i2c/ov9726.c
+index d7c686c25..04581029d 100644
+--- a/drivers/media/i2c/ov9726.c
++++ b/drivers/media/i2c/ov9726.c
+@@ -44,15 +44,21 @@
+ #define OV9726_EXPOSURE_MAX_MARGIN	4
+ #define OV9726_EXPOSURE_DEFAULT		787
+ 
++/*
++ * OmniVision-style gain: bits [6:4] each double the gain, bits [3:0] add
++ * n/16 (measured; bit 7 has no effect). The control is linear, 1/16 steps.
++ */
+ #define OV9726_REG_ANALOGUE_GAIN	CCI_REG16(0x0204)
+-#define OV9726_ANALOGUE_GAIN_MIN	0x10
+-#define OV9726_ANALOGUE_GAIN_MAX	0xff
+-#define OV9726_ANALOGUE_GAIN_DEFAULT	0x3f
++#define OV9726_ANALOGUE_GAIN_MIN	16	/* 1x */
++#define OV9726_ANALOGUE_GAIN_MAX	248	/* 8 * 31/16 = 15.5x */
++#define OV9726_ANALOGUE_GAIN_DEFAULT	32	/* 2x */
++
++/* SMIA CSI-2 data format: source / compressed bit depth */
++#define OV9726_REG_CSI_DATA_FORMAT	CCI_REG16(0x0112)
+ 
+ #define OV9726_REG_VTS			CCI_REG16(0x0340)
+ #define OV9726_VTS_MAX			0xffff
+ 
+-#define OV9726_REG_TEST_PATTERN		CCI_REG16(0x0600)
+ 
+ 
+ #define to_ov9726(_sd)			container_of(_sd, struct ov9726, sd)
+@@ -70,14 +76,6 @@ struct ov9726_mode {
+ 	unsigned int num_regs;
+ };
+ 
+-static const char * const ov9726_test_pattern_menu[] = {
+-	"Disabled",
+-	"Solid Colour",
+-	"Colour Bars",
+-	"Fade To Grey Colour Bars",
+-	"PN9",
+-};
+-
+ static const char * const ov9726_supply_names[] = {
+ 	"avdd",		/* Analog power, 2.8 V */
+ 	"dovdd",	/* Digital I/O power, 1.8 V */
+@@ -148,8 +146,6 @@ static const struct cci_reg_sequence ov9726_1280x720_regs[] = {
+ 	{ CCI_REG8(0x3406), 0x01 },
+ 	{ CCI_REG8(0x3503), 0x17 },
+ 	/* RAW10 */
+-	{ CCI_REG8(0x0112), 0x0a },
+-	{ CCI_REG8(0x0113), 0x0a },
+ 	{ CCI_REG8(0x3013), 0x20 },
+ 	{ CCI_REG8(0x4837), 0x2f },
+ 	{ CCI_REG8(0x3615), 0xf0 },
+@@ -196,20 +192,33 @@ static const struct ov9726_mode supported_modes[] = {
+ 
+ static u32 ov9726_get_format_code(struct ov9726 *ov9726)
+ {
++	/*
++	 * The vendor settings set ORIENTATION = HFLIP (reported as "unflipped"
++	 * here); the native readout order is BGGR, mirrored it is GBRG
++	 * (verified on the Surface RT with a real scene).
++	 */
+ 	static const u32 codes[2][2] = {
+ 		/* hflip = 0, 1 */
+-		{ MEDIA_BUS_FMT_SBGGR10_1X10, MEDIA_BUS_FMT_SGBRG10_1X10 },
+-		{ MEDIA_BUS_FMT_SGRBG10_1X10, MEDIA_BUS_FMT_SRGGB10_1X10 },
++		{ MEDIA_BUS_FMT_SGBRG10_1X10, MEDIA_BUS_FMT_SBGGR10_1X10 },
++		{ MEDIA_BUS_FMT_SRGGB10_1X10, MEDIA_BUS_FMT_SGRBG10_1X10 },
+ 	};
+ 
+-	/*
+-	 * The vendor settings set ORIENTATION = HFLIP, which is reported as
+-	 * "unflipped" here.
+-	 */
+ 	return codes[ov9726->vflip ? ov9726->vflip->val : 0]
+ 		    [ov9726->hflip ? ov9726->hflip->val : 0];
+ }
+ 
++static u32 ov9726_gain_to_reg(u32 gain)
++{
++	u32 coarse = 0;
++
++	while (gain >= 32 && coarse < 3) {
++		gain >>= 1;
++		coarse++;
++	}
++
++	return (GENMASK(coarse, 0) >> 1) << 4 | min(gain - 16, 15U);
++}
++
+ static int ov9726_set_ctrl(struct v4l2_ctrl *ctrl)
+ {
+ 	struct ov9726 *ov9726 = container_of(ctrl->handler, struct ov9726,
+@@ -238,7 +247,7 @@ static int ov9726_set_ctrl(struct v4l2_ctrl *ctrl)
+ 	switch (ctrl->id) {
+ 	case V4L2_CID_ANALOGUE_GAIN:
+ 		ret = cci_write(ov9726->regmap, OV9726_REG_ANALOGUE_GAIN,
+-				ctrl->val, NULL);
++				ov9726_gain_to_reg(ctrl->val), NULL);
+ 		break;
+ 	case V4L2_CID_EXPOSURE:
+ 		ret = cci_write(ov9726->regmap, OV9726_REG_EXPOSURE,
+@@ -259,10 +268,6 @@ static int ov9726_set_ctrl(struct v4l2_ctrl *ctrl)
+ 		ret = cci_write(ov9726->regmap, OV9726_REG_ORIENTATION, val,
+ 				NULL);
+ 		break;
+-	case V4L2_CID_TEST_PATTERN:
+-		ret = cci_write(ov9726->regmap, OV9726_REG_TEST_PATTERN,
+-				ctrl->val, NULL);
+-		break;
+ 	default:
+ 		ret = -EINVAL;
+ 		break;
+@@ -286,7 +291,7 @@ static int ov9726_init_controls(struct ov9726 *ov9726)
+ 	struct v4l2_ctrl *ctrl;
+ 	int ret;
+ 
+-	v4l2_ctrl_handler_init(hdl, 10);
++	v4l2_ctrl_handler_init(hdl, 9);
+ 
+ 	ctrl = v4l2_ctrl_new_int_menu(hdl, &ov9726_ctrl_ops, V4L2_CID_LINK_FREQ,
+ 				      ARRAY_SIZE(ov9726_link_freq_menu) - 1, 0,
+@@ -326,12 +331,6 @@ static int ov9726_init_controls(struct ov9726 *ov9726)
+ 					  V4L2_CID_HFLIP, 0, 1, 1, 0);
+ 	ov9726->vflip = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
+ 					  V4L2_CID_VFLIP, 0, 1, 1, 0);
+-
+-	v4l2_ctrl_new_std_menu_items(hdl, &ov9726_ctrl_ops,
+-				     V4L2_CID_TEST_PATTERN,
+-				     ARRAY_SIZE(ov9726_test_pattern_menu) - 1,
+-				     0, 0, ov9726_test_pattern_menu);
+-
+ 	if (hdl->error) {
+ 		ret = hdl->error;
+ 		goto error_free_hdlr;
+@@ -398,6 +397,12 @@ static int ov9726_enable_streams(struct v4l2_subdev *sd,
+ 		goto error;
+ 	}
+ 
++	/* RAW10 (0x0808 RAW8 gives empty frames on Tegra30) */
++	ret = cci_write(ov9726->regmap, OV9726_REG_CSI_DATA_FORMAT, 0x0a0a,
++			NULL);
++	if (ret)
++		goto error;
++
+ 	ret = __v4l2_ctrl_handler_setup(ov9726->sd.ctrl_handler);
+ 	if (ret)
+ 		goto error;
+-- 
+2.47.3
+

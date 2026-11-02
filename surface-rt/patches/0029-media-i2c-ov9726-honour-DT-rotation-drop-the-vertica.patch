@@ -1,0 +1,150 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 14:07:02 +0000
+Subject: [PATCH 29/45] media: i2c: ov9726: honour DT rotation, drop the
+ vertical flip control
+
+Parse the fwnode device properties first and, for a module mounted upside
+down (rotation = <180>), default HFLIP on; orientation and rotation are
+exposed as read-only controls.
+
+Setting the sensor vertical flip bit (ORIENTATION bit 1) makes the
+Tegra30 CSI pixel parser reject every frame (PIXEL_PARSER_STATUS
+0x04900000) and the stream never recovers, so drop the VFLIP control and
+leave vertical flipping to the bridge. The Bayer order now only depends
+on HFLIP: GBRG normally, BGGR mirrored.
+---
+ drivers/media/i2c/ov9726.c | 51 +++++++++++++++-----------------------
+ 1 file changed, 20 insertions(+), 31 deletions(-)
+
+diff --git a/drivers/media/i2c/ov9726.c b/drivers/media/i2c/ov9726.c
+index 04581029d..f3a9dcbd5 100644
+--- a/drivers/media/i2c/ov9726.c
++++ b/drivers/media/i2c/ov9726.c
+@@ -34,7 +34,6 @@
+ 
+ #define OV9726_REG_ORIENTATION		CCI_REG8(0x0101)
+ #define OV9726_ORIENTATION_HFLIP	BIT(0)
+-#define OV9726_ORIENTATION_VFLIP	BIT(1)
+ 
+ #define OV9726_REG_SOFTWARE_RESET	CCI_REG8(0x0103)
+ #define OV9726_REG_GROUPED_HOLD		CCI_REG8(0x0104)
+@@ -98,7 +97,6 @@ struct ov9726 {
+ 	struct v4l2_ctrl *vblank;
+ 	struct v4l2_ctrl *exposure;
+ 	struct v4l2_ctrl *hflip;
+-	struct v4l2_ctrl *vflip;
+ };
+ 
+ /* 1280x720, 30 fps: line length 1664, frame length 840 */
+@@ -197,14 +195,8 @@ static u32 ov9726_get_format_code(struct ov9726 *ov9726)
+ 	 * here); the native readout order is BGGR, mirrored it is GBRG
+ 	 * (verified on the Surface RT with a real scene).
+ 	 */
+-	static const u32 codes[2][2] = {
+-		/* hflip = 0, 1 */
+-		{ MEDIA_BUS_FMT_SGBRG10_1X10, MEDIA_BUS_FMT_SBGGR10_1X10 },
+-		{ MEDIA_BUS_FMT_SRGGB10_1X10, MEDIA_BUS_FMT_SGRBG10_1X10 },
+-	};
+-
+-	return codes[ov9726->vflip ? ov9726->vflip->val : 0]
+-		    [ov9726->hflip ? ov9726->hflip->val : 0];
++	return ov9726->hflip && ov9726->hflip->val ?
++	       MEDIA_BUS_FMT_SBGGR10_1X10 : MEDIA_BUS_FMT_SGBRG10_1X10;
+ }
+ 
+ static u32 ov9726_gain_to_reg(u32 gain)
+@@ -225,7 +217,6 @@ static int ov9726_set_ctrl(struct v4l2_ctrl *ctrl)
+ 					     ctrl_handler);
+ 	const struct ov9726_mode *mode = &supported_modes[0];
+ 	s64 exposure_max;
+-	u64 val;
+ 	int ret = 0;
+ 
+ 	if (ctrl->id == V4L2_CID_VBLANK) {
+@@ -258,15 +249,9 @@ static int ov9726_set_ctrl(struct v4l2_ctrl *ctrl)
+ 				ctrl->val + mode->height, NULL);
+ 		break;
+ 	case V4L2_CID_HFLIP:
+-	case V4L2_CID_VFLIP:
+ 		/* vendor default (HFLIP bit set) is our "unflipped" */
+-		val = 0;
+-		if (!ov9726->hflip->val)
+-			val |= OV9726_ORIENTATION_HFLIP;
+-		if (ov9726->vflip->val)
+-			val |= OV9726_ORIENTATION_VFLIP;
+-		ret = cci_write(ov9726->regmap, OV9726_REG_ORIENTATION, val,
+-				NULL);
++		ret = cci_write(ov9726->regmap, OV9726_REG_ORIENTATION,
++				ctrl->val ? 0 : OV9726_ORIENTATION_HFLIP, NULL);
+ 		break;
+ 	default:
+ 		ret = -EINVAL;
+@@ -289,9 +274,23 @@ static int ov9726_init_controls(struct ov9726 *ov9726)
+ 	struct v4l2_fwnode_device_properties props;
+ 	s64 h_blank, v_blank;
+ 	struct v4l2_ctrl *ctrl;
++	bool flip;
+ 	int ret;
+ 
+-	v4l2_ctrl_handler_init(hdl, 9);
++	ret = v4l2_fwnode_device_parse(ov9726->dev, &props);
++	if (ret)
++		return ret;
++
++	/*
++	 * A module mounted upside down (DT rotation = 180) gets the horizontal
++	 * half of the compensation here. The sensor's own vertical flip
++	 * (ORIENTATION bit 1) makes the Tegra30 CSI pixel parser reject every
++	 * frame, so no VFLIP control is exposed and the bridge (Tegra VI) does
++	 * the vertical flip.
++	 */
++	flip = props.rotation == 180;
++
++	v4l2_ctrl_handler_init(hdl, 11);
+ 
+ 	ctrl = v4l2_ctrl_new_int_menu(hdl, &ov9726_ctrl_ops, V4L2_CID_LINK_FREQ,
+ 				      ARRAY_SIZE(ov9726_link_freq_menu) - 1, 0,
+@@ -328,9 +327,7 @@ static int ov9726_init_controls(struct ov9726 *ov9726)
+ 					 OV9726_ANALOGUE_GAIN_DEFAULT);
+ 
+ 	ov9726->hflip = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
+-					  V4L2_CID_HFLIP, 0, 1, 1, 0);
+-	ov9726->vflip = v4l2_ctrl_new_std(hdl, &ov9726_ctrl_ops,
+-					  V4L2_CID_VFLIP, 0, 1, 1, 0);
++					  V4L2_CID_HFLIP, 0, 1, 1, flip);
+ 	if (hdl->error) {
+ 		ret = hdl->error;
+ 		goto error_free_hdlr;
+@@ -338,12 +335,6 @@ static int ov9726_init_controls(struct ov9726 *ov9726)
+ 
+ 	if (ov9726->hflip)
+ 		ov9726->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+-	if (ov9726->vflip)
+-		ov9726->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
+-
+-	ret = v4l2_fwnode_device_parse(ov9726->dev, &props);
+-	if (ret)
+-		goto error_free_hdlr;
+ 
+ 	ret = v4l2_ctrl_new_fwnode_properties(hdl, &ov9726_ctrl_ops, &props);
+ 	if (ret)
+@@ -415,7 +406,6 @@ static int ov9726_enable_streams(struct v4l2_subdev *sd,
+ 	}
+ 
+ 	__v4l2_ctrl_grab(ov9726->hflip, true);
+-	__v4l2_ctrl_grab(ov9726->vflip, true);
+ 
+ 	return 0;
+ 
+@@ -438,7 +428,6 @@ static int ov9726_disable_streams(struct v4l2_subdev *sd,
+ 		dev_err(ov9726->dev, "failed to stop streaming: %d\n", ret);
+ 
+ 	__v4l2_ctrl_grab(ov9726->hflip, false);
+-	__v4l2_ctrl_grab(ov9726->vflip, false);
+ 
+ 	pm_runtime_put_autosuspend(ov9726->dev);
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Dmitry Osipenko <digetx@gmail.com>
+Date: Wed, 30 Jun 2021 19:41:53 +0300
+Subject: [PATCH 07/45] memory: tegra: Don't error out DMA flushing
+
+DMA flushing may fail if hardware unit is power-gated. We need to reset
+hardware unit and its memory clients in a certain order, but it becomes
+complicated when we need to power-up hardware domain for the first time
+since resets are requested in a special order. We assumed that power
+domains are initially turned on all devices, but this could be a wrong
+assumption.
+
+This copy adds a comment on the Surface RT case: the 3D2 client never
+drains when the PMC powers down unused domains at probe, and without
+this tegra-pmc fails to probe, taking USB, PWM, backlight and display
+with it.
+
+Rebased to Linux 7.2.13 for linux-surface-rt; from codeberg.org/libre-tegra/linux v7.0.1-stable
+8d0f5f4f9fff.
+
+Signed-off-by: Dmitry Osipenko <digetx@gmail.com>
+---
+ drivers/memory/tegra/mc.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/memory/tegra/mc.c b/drivers/memory/tegra/mc.c
+index ec80ea9cc..3d9ffd5e5 100644
+--- a/drivers/memory/tegra/mc.c
++++ b/drivers/memory/tegra/mc.c
+@@ -263,9 +263,14 @@ static int tegra_mc_hotreset_assert(struct reset_controller_dev *rcdev,
+ 		/* wait for completion of the outstanding DMA requests */
+ 		while (!rst_ops->dma_idling(mc, rst)) {
+ 			if (!retries--) {
+-				dev_err(mc->dev, "failed to flush %s DMA\n",
++				/*
++				 * A client that never drains (3D2 on the Surface RT)
++				 * must not fail the hot reset: tegra-pmc would then
++				 * fail to probe and take USB, PWM and display with it.
++				 */
++				dev_dbg(mc->dev, "failed to flush %s DMA\n",
+ 					rst->name);
+-				return -EBUSY;
++				break;
+ 			}
+ 
+ 			usleep_range(10, 100);
+-- 
+2.47.3
+

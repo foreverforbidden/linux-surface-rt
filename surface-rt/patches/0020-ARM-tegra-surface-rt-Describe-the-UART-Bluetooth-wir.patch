@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:55:00 +0000
+Subject: [PATCH 20/45] ARM: tegra: surface-rt: Describe the UART Bluetooth
+ wiring
+
+The 88W8797 on sdmmc3 enumerates only SDIO function 1 (WLAN, 02df:9129).
+BT is strapped to UART. The firmware's ACPI tables (Open Surface RT wiki:
+https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt,
+SSDT0000.ASL) describe it as BTH0 (NVDAF000): a 115200 baud UART with
+RTS/CTS, host-wake on PU6 and an output on PD1. Bluetooth works on UARTC
+at 115200 with RTS/CTS.
+
+Drop the bluetooth@2 SDIO node, which never binds. Hog PD1 high
+(bt-enable, as UEFI leaves it) and document the wiring on the UARTC node.
+BT still needs an SD-UART (BT_UART) build of the 8797 combo firmware. The
+linux-firmware image is built with BT_SDIO.
+---
+ .../nvidia/tegra30-microsoft-surface-rt.dts   | 29 ++++++++++---------
+ 1 file changed, 16 insertions(+), 13 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index 2f7a62306..22f3cfcfd 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -124,6 +124,15 @@ charger-interrupt {
+ 		};
+ 	};
+ 
++	gpio@6000d000 {
++		bt-enable-hog {
++			gpio-hog;
++			gpios = <TEGRA_GPIO(D, 1) GPIO_ACTIVE_HIGH>;
++			output-high;
++			line-name = "bt-enable";
++		};
++	};
++
+ 	uarta: serial@70006000 {
+ 		/delete-property/ dmas;
+ 		/delete-property/ dma-names;
+@@ -136,7 +145,13 @@ uartc: serial@70006200 {
+ 		/delete-property/ reg-shift;
+ 		status = "okay";
+ 
+-		/* Bluetooth - Marvell 88W8797 */
++		/*
++		 * Bluetooth - Marvell 88W8797, BTH0 (NVDAF000) in the firmware's ACPI tables (Open Surface RT wiki: https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt): 115200 8N1 with
++		 * RTS/CTS, host-wake on PU6 (edge, active low), enable on PD1. The
++		 * SDIO card exposes only function 1 (WLAN), so BT is strapped to UART.
++		 * BT stays silent with the linux-firmware sd8797_uapsta.bin, which is
++		 * built with BT_SDIO; an SD-UART (BT_UART) combo image is required.
++		 */
+ 	};
+ 
+ 	pwm@7000a000 {
+@@ -487,18 +502,6 @@ wifi@1 {
+ 			interrupt-parent = <&gpio>;
+ 			interrupts = <TEGRA_GPIO(U, 5) IRQ_TYPE_LEVEL_HIGH>;
+ 		};
+-
+-		// TODO test SDIO bluetooth binding
+-		bluetooth@2 {
+-			compatible = "marvell,sd8897-bt";
+-			reg = <2>;
+-
+-			// interrupt-parent = <&gpio>; TODO
+-			// interrupts = <TEGRA_GPIO() IRQ_TYPE_LEVEL_LOW>; TODO
+-
+-			marvell,wakeup-pin = /bits/ 16 <0x0d>;
+-			marvell,wakeup-gap-ms = /bits/ 16 <0x64>;
+-		};
+ 	};
+ 
+ 	sdmmc4: mmc@78000600 {
+-- 
+2.47.3
+

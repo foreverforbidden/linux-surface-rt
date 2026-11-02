@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:27:03 +0000
+Subject: [PATCH 16/45] ARM: dts: tegra30: surface-rt: drop the SPI NOR boot
+ flash
+
+The node was copied from the NVIDIA reference boards. On the Surface RT
+the w25q32 never answers (JEDEC ID 00 00 00 00 00 00, also with the
+missing GMI_A19 pad muxed to SPI4 at runtime); the device boots from eMMC.
+Disable SPI4 instead of probing a flash that isn't there.
+---
+ .../dts/nvidia/tegra30-microsoft-surface-rt.dts   | 15 ++++++---------
+ 1 file changed, 6 insertions(+), 9 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index ae7aaa719..c8ec47ae1 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -395,16 +395,13 @@ vdd_core: core-regulator@60 {
+ 		};
+ 	};
+ 
++	/*
++	 * The reference boards (Cardhu/Beaver) carry a W25Q32 boot flash on
++	 * SPI4 CS1; the Surface RT boots from eMMC and the JEDEC ID reads all
++	 * zeros, also with GMI_A19 muxed to SPI4. Keep the controller off.
++	 */
+ 	spi@7000da00 {
+-		status = "okay";
+-		spi-max-frequency = <25000000>;
+-
+-		/* Boot flash - OTP read only */
+-		flash@1 {
+-			compatible = "winbond,w25q32", "jedec,spi-nor";
+-			reg = <1>;
+-			spi-max-frequency = <20000000>;
+-		};
++		status = "disabled";
+ 	};
+ 
+ 	pmc@7000e400 {
+-- 
+2.47.3
+

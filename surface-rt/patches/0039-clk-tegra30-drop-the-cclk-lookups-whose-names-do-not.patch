@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 01:10:56 +0000
+Subject: [PATCH 39/45] clk: tegra30: drop the cclk lookups whose names do not
+ fit
+
+pll_p_out{3,4}_cclk{g,lp} are 16 or 17 characters, more than clkdev's
+connection IDs hold, so their clk_register_clkdev() failed at every boot
+("connection ID is greater than 16"). Nothing looks them up: the super
+clock muxes find their parents by name.
+---
+ drivers/clk/tegra/clk-tegra30.c | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/drivers/clk/tegra/clk-tegra30.c b/drivers/clk/tegra/clk-tegra30.c
+index 61fe527ee..75183a9d2 100644
+--- a/drivers/clk/tegra/clk-tegra30.c
++++ b/drivers/clk/tegra/clk-tegra30.c
+@@ -906,7 +906,6 @@ static void __init tegra30_super_clk_init(void)
+ 	clk = tegra_clk_register_divider("pll_p_out3_cclkg", "pll_p_out3",
+ 				clk_base + SUPER_CCLKG_DIVIDER, 0,
+ 				TEGRA_DIVIDER_INT, 16, 8, 1, NULL);
+-	clk_register_clkdev(clk, "pll_p_out3_cclkg", NULL);
+ 
+ 	/*
+ 	 * Clock input to cclk_g divided from pll_p_out4 using
+@@ -915,7 +914,6 @@ static void __init tegra30_super_clk_init(void)
+ 	clk = tegra_clk_register_divider("pll_p_out4_cclkg", "pll_p_out4",
+ 				clk_base + SUPER_CCLKG_DIVIDER, 0,
+ 				TEGRA_DIVIDER_INT, 16, 8, 1, NULL);
+-	clk_register_clkdev(clk, "pll_p_out4_cclkg", NULL);
+ 
+ 	/* CCLKG */
+ 	clk = tegra_clk_register_super_cclk("cclk_g", cclk_g_parents,
+@@ -941,7 +939,6 @@ static void __init tegra30_super_clk_init(void)
+ 	clk = tegra_clk_register_divider("pll_p_out3_cclklp", "pll_p_out3",
+ 				clk_base + SUPER_CCLKLP_DIVIDER, 0,
+ 				TEGRA_DIVIDER_INT, 16, 8, 1, NULL);
+-	clk_register_clkdev(clk, "pll_p_out3_cclklp", NULL);
+ 
+ 	/*
+ 	 * Clock input to cclk_lp divided from pll_p_out4 using
+@@ -950,7 +947,6 @@ static void __init tegra30_super_clk_init(void)
+ 	clk = tegra_clk_register_divider("pll_p_out4_cclklp", "pll_p_out4",
+ 				clk_base + SUPER_CCLKLP_DIVIDER, 0,
+ 				TEGRA_DIVIDER_INT, 16, 8, 1, NULL);
+-	clk_register_clkdev(clk, "pll_p_out4_cclklp", NULL);
+ 
+ 	/* CCLKLP */
+ 	clk = tegra_clk_register_super_mux("cclk_lp", cclk_lp_parents,
+-- 
+2.47.3
+

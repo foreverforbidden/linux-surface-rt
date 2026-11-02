@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 01:10:55 +0000
+Subject: [PATCH 36/45] ARM: dts: tegra30: surface-rt: no L2C-310 full line of
+ zeros
+
+The firmware leaves the Cortex-A9 auxiliary control register's "write
+full line of zeros" bit off, and the normal world cannot set it, so the
+kernel said "L2C-310: enabling full line of zeros but not enabled in
+Cortex-A9" at every boot. Set arm,full-line-zero-disable.
+---
+ .../boot/dts/nvidia/tegra30-microsoft-surface-rt.dts   | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index 60bcae792..15a076215 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -37,6 +37,16 @@ memory@80000000 {
+ 		reg = <0x80000000 0x80000000>;
+ 	};
+ 
++	cache-controller@50043000 {
++		/*
++		 * The secure firmware owns the Cortex-A9 auxiliary control
++		 * register and leaves its "write full line of zeros" bit off,
++		 * and Linux cannot set it from the normal world: the L2C-310
++		 * half of the feature is of no use.
++		 */
++		arm,full-line-zero-disable;
++	};
++
+ 	host1x@50000000 {
+ 		lcd: dc@54200000 {
+ 			rgb {
+-- 
+2.47.3
+

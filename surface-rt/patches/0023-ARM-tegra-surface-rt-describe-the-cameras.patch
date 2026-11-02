@@ -1,0 +1,234 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:43:19 +0000
+Subject: [PATCH 23/45] ARM: tegra: surface-rt: describe the cameras
+
+Enable the Tegra30 VI/CSI and describe the two OV9726 cameras on I2C3,
+with their power sequence as the firmware's ACPI tables give it in
+\_SB.GFXC.CAM1.CPWR (Open Surface RT wiki:
+https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt,
+SSDT0000.ASL): shared 1.8 V enable on BB4, 2.8 V LDOs on R6/R7, resets
+on BB0/BB7. Label the PMIC LDO6 as avdd_dsi_csi for the CSI pads.
+
+Both sensors answer at 0x10, so only the front camera (CSI-B) is enabled;
+the rear one (CSI-A) is described but disabled.
+---
+ .../nvidia/tegra30-microsoft-surface-rt.dts   | 174 +++++++++++++++++-
+ 1 file changed, 172 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+index 22f3cfcfd..ffb26ea2d 100644
+--- a/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
++++ b/arch/arm/boot/dts/nvidia/tegra30-microsoft-surface-rt.dts
+@@ -2,6 +2,7 @@
+ /dts-v1/;
+ 
+ #include <dt-bindings/input/input.h>
++#include <dt-bindings/media/video-interfaces.h>
+ #include <dt-bindings/thermal/thermal.h>
+ 
+ #include "tegra30.dtsi"
+@@ -63,6 +64,91 @@ hdmi_out: endpoint {
+ 				};
+ 			};
+ 		};
++
++		vi@54080000 {
++			status = "okay";
++
++			csi@800 {
++				status = "okay";
++
++				avdd-dsi-csi-supply = <&avdd_dsi_csi>;
++
++				/* CSI-A: rear camera (CAM1), 1 lane */
++				channel@0 {
++					reg = <0>;
++
++					nvidia,mipi-calibrate = <&csi 0>; /* CSIA pad */
++
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					port@0 {
++						reg = <0>;
++
++						csia_input: endpoint {
++							data-lanes = <1>;
++							remote-endpoint = <&rear_camera_output>;
++						};
++					};
++
++					port@1 {
++						reg = <1>;
++
++						csia_output: endpoint {
++							remote-endpoint = <&vi_ppa_input>;
++						};
++					};
++				};
++
++				/* CSI-B: front camera (CAM2), 1 lane */
++				channel@1 {
++					reg = <1>;
++
++					nvidia,mipi-calibrate = <&csi 1>; /* CSIB pad */
++
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					port@0 {
++						reg = <0>;
++
++						csib_input: endpoint {
++							data-lanes = <3>;
++							remote-endpoint = <&front_camera_output>;
++						};
++					};
++
++					port@1 {
++						reg = <1>;
++
++						csib_output: endpoint {
++							remote-endpoint = <&vi_ppb_input>;
++						};
++					};
++				};
++			};
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					vi_ppa_input: endpoint {
++						remote-endpoint = <&csia_output>;
++					};
++				};
++
++				port@1 {
++					reg = <1>;
++
++					vi_ppb_input: endpoint {
++						remote-endpoint = <&csib_output>;
++					};
++				};
++			};
++		};
+ 	};
+ 
+ 	vde@6001a000 {
+@@ -226,7 +312,81 @@ i2c@7000c500 {
+ 		status = "okay";
+ 		clock-frequency = <100000>;
+ 
+-		/* Cams at 0x10 and 0x72 */
++		/*
++		 * Both cameras are OmniVision OV9726 (1280x800 RAW10, 1-lane
++		 * MIPI CSI-2) strapped to the same address 0x10, so only one of
++		 * them can be described/enabled at a time. Power sequence from
++		 * the firmware's ACPI tables, \_SB.GFXC.CAM1.CPWR (Open Surface RT wiki: https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt): 1.8 V (BB4) shared,
++		 * 2.8 V LDO R6/R7, active-low reset BB0/BB7.
++		 */
++		front_camera: camera@10 {
++			compatible = "ovti,ov9726";
++			reg = <0x10>;
++			status = "okay";
++
++			clocks = <&tegra_car TEGRA30_CLK_CSUS>;
++			assigned-clocks = <&tegra_car TEGRA30_CLK_VI_SENSOR>,
++					  <&tegra_car TEGRA30_CLK_CSUS>;
++			assigned-clock-rates = <24000000>;
++			assigned-clock-parents = <&tegra_car TEGRA30_CLK_PLL_P>,
++						 <&tegra_car TEGRA30_CLK_VI_SENSOR>;
++
++			reset-gpios = <&gpio TEGRA_GPIO(BB, 7) GPIO_ACTIVE_LOW>;
++
++			avdd-supply = <&vdd_cam2_ldo>;
++			dovdd-supply = <&vdd_1v8_cam>;
++
++			orientation = <0>;
++
++			port {
++				front_camera_output: endpoint {
++					bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
++					data-lanes = <1>;
++					link-frequencies = /bits/ 64 <210000000>;
++					remote-endpoint = <&csib_input>;
++				};
++			};
++		};
++
++		/*
++		 * Rear camera: same address as the front one. To use it, disable
++		 * the front camera node and enable this one.
++		 */
++		/*
++		 * Both cameras are OmniVision OV9726 (1280x800 RAW10, 1-lane
++		 * MIPI CSI-2) strapped to the same address 0x10, so only one of
++		 * them can be described/enabled at a time. Power sequence from
++		 * the firmware's ACPI tables, \_SB.GFXC.CAM1.CPWR (Open Surface RT wiki: https://open-rt.gitbook.io/open-surfacert/surface-rt/uefi/acpi-tables/acpi-ssdt): 1.8 V (BB4) shared,
++		 * 2.8 V LDO R6/R7, active-low reset BB0/BB7.
++		 */
++		rear_camera: rear-camera@10 {
++			compatible = "ovti,ov9726";
++			reg = <0x10>;
++			status = "disabled";
++
++			clocks = <&tegra_car TEGRA30_CLK_CSUS>;
++			assigned-clocks = <&tegra_car TEGRA30_CLK_VI_SENSOR>,
++					  <&tegra_car TEGRA30_CLK_CSUS>;
++			assigned-clock-rates = <24000000>;
++			assigned-clock-parents = <&tegra_car TEGRA30_CLK_PLL_P>,
++						 <&tegra_car TEGRA30_CLK_VI_SENSOR>;
++
++			reset-gpios = <&gpio TEGRA_GPIO(BB, 0) GPIO_ACTIVE_LOW>;
++
++			avdd-supply = <&vdd_cam1_ldo>;
++			dovdd-supply = <&vdd_1v8_cam>;
++
++			orientation = <1>;
++
++			port {
++				rear_camera_output: endpoint {
++					bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
++					data-lanes = <1>;
++					link-frequencies = /bits/ 64 <210000000>;
++					remote-endpoint = <&csia_input>;
++				};
++			};
++		};
+ 	};
+ 
+ 	hdmi_ddc: i2c@7000c700 {
+@@ -355,7 +515,7 @@ vddio_usd: ldo5 {
+ 					regulator-max-microvolt = <3300000>;
+ 				};
+ 
+-				ldo6 {
++				avdd_dsi_csi: ldo6 {
+ 					regulator-name = "avdd_dsi_csi";
+ 					regulator-min-microvolt = <1200000>;
+ 					regulator-max-microvolt = <1200000>;
+@@ -794,6 +954,16 @@ vdd_cam2_ldo: regulator-cam2 {
+ 		vin-supply = <&vdd_5v0_bat>;
+ 	};
+ 
++	vdd_1v8_cam: regulator-cam-1v8 {
++		compatible = "regulator-fixed";
++		regulator-name = "vdd_1v8_cam";
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		gpio = <&gpio TEGRA_GPIO(BB, 4) GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		vin-supply = <&vdd_1v8_vio>;
++	};
++
+ 	vdd_2v8_sen: regulator-sensors {
+ 		compatible = "regulator-fixed";
+ 		regulator-name = "vdd_sensor_hub";
+-- 
+2.47.3
+

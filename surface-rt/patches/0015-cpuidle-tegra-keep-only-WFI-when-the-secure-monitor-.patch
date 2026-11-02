@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:26:54 +0000
+Subject: [PATCH 15/45] cpuidle: tegra: keep only WFI when the secure monitor
+ can't resume CPUs
+
+On the Surface RT the kernel runs in the non-secure world under a secure
+monitor, registered as a Trusted Foundations variant that has no
+set_cpu_boot_addr or prepare_idle. Entering C7 (core power-gating) or CC6
+hangs the machine, which is why the EFI boot needs cpuidle.off=1. Disable
+the power-gating states in that case, so the driver registers with C1 only
+and the command line flag is no longer required.
+---
+ drivers/cpuidle/cpuidle-tegra.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/drivers/cpuidle/cpuidle-tegra.c b/drivers/cpuidle/cpuidle-tegra.c
+index aca907a62..4942bd314 100644
+--- a/drivers/cpuidle/cpuidle-tegra.c
++++ b/drivers/cpuidle/cpuidle-tegra.c
+@@ -356,6 +356,21 @@ static int tegra_cpuidle_probe(struct platform_device *pdev)
+ 	if (tegra_pmc_get_suspend_mode() < TEGRA_SUSPEND_LP2)
+ 		tegra_cpuidle_disable_state(TEGRA_CC6);
+ 
++	/*
++	 * A power-gated core restarts through the CPU reset vector.  When the
++	 * kernel runs in the non-secure world under a secure monitor that
++	 * can't be told where to resume (the Surface RT's Trusted Foundations
++	 * ops offer only L2 cache services), the core comes back
++	 * into the monitor and never returns to Linux: the machine hangs as
++	 * soon as C7 or CC6 is entered.  Keep only the WFI state then.
++	 */
++	if (trusted_foundations_registered() &&
++	    !firmware_ops->set_cpu_boot_addr) {
++		pr_info("secure firmware can't set the CPU resume address, power-gating states disabled\n");
++		tegra_cpuidle_disable_state(TEGRA_C7);
++		tegra_cpuidle_disable_state(TEGRA_CC6);
++	}
++
+ 	/*
+ 	 * Required suspend-resume functionality, which is provided by the
+ 	 * Tegra-arch core and PMC driver, is unavailable if PM-sleep option
+-- 
+2.47.3
+

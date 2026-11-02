@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 01:13:06 +0000
+Subject: [PATCH 42/45] ASoC: wm8962: resume the codec to set up microphone
+ detection
+
+wm8962_mic_detect() updates ADDITIONAL_CONTROL_4, a volatile register.
+Called from the machine driver while the codec is runtime suspended
+(regcache cache only), the update failed and MICDET_ENA was never set,
+on some boots of the Surface RT:
+
+  wm8962 4-001a: ASoC error (-16): at snd_soc_component_update_bits()
+  on wm8962.4-001a for register: [0x00000030]
+
+Take a runtime PM reference around the register updates.
+---
+ sound/soc/codecs/wm8962.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/wm8962.c b/sound/soc/codecs/wm8962.c
+index 8ed1f4aac..c173a2e53 100644
+--- a/sound/soc/codecs/wm8962.c
++++ b/sound/soc/codecs/wm8962.c
+@@ -3240,7 +3240,7 @@ int wm8962_mic_detect(struct snd_soc_component *component, struct snd_soc_jack *
+ {
+ 	struct wm8962_priv *wm8962 = snd_soc_component_get_drvdata(component);
+ 	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+-	int irq_mask, enable;
++	int irq_mask, enable, ret;
+ 
+ 	wm8962->jack = jack;
+ 	if (jack) {
+@@ -3251,11 +3251,22 @@ int wm8962_mic_detect(struct snd_soc_component *component, struct snd_soc_jack *
+ 		enable = 0;
+ 	}
+ 
++	/*
++	 * ADDITIONAL_CONTROL_4 is volatile: while the codec is runtime
++	 * suspended (cache only) the update fails with -EBUSY and the
++	 * detection is never enabled. Resume it for the writes.
++	 */
++	ret = pm_runtime_resume_and_get(component->dev);
++	if (ret < 0)
++		return ret;
++
+ 	snd_soc_component_update_bits(component, WM8962_INTERRUPT_STATUS_2_MASK,
+ 			    WM8962_MICD_EINT | WM8962_MICSCD_EINT, irq_mask);
+ 	snd_soc_component_update_bits(component, WM8962_ADDITIONAL_CONTROL_4,
+ 			    WM8962_MICDET_ENA, enable);
+ 
++	pm_runtime_put(component->dev);
++
+ 	/* Send an initial empty report */
+ 	snd_soc_jack_report(wm8962->jack, 0,
+ 			    SND_JACK_MICROPHONE | SND_JACK_BTN_0);
+-- 
+2.47.3
+

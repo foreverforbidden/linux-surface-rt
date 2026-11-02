@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 14:07:04 +0000
+Subject: [PATCH 30/45] staging: media: tegra-video: VI vflip for upside-down
+ sensors
+
+When the sensor has no VFLIP control the VI provides one. Default it on
+when the sensor reports a 180 degree mounting rotation (and handles the
+horizontal half itself), so the image comes out upright.
+
+Flipping rows in the VI swaps the Bayer row order in memory, so report the
+row-swapped fourcc (e.g. BGGR -> GRBG) to userspace while VI vflip is on,
+and translate it back for the sensor in try/set format.
+
+Tested on Surface RT (OV9726 with rotation 180): enum/get format report
+BA10 and the frame is upright with correct colours.
+---
+ drivers/staging/media/tegra-video/vi.c | 62 ++++++++++++++++++++++++--
+ 1 file changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/staging/media/tegra-video/vi.c b/drivers/staging/media/tegra-video/vi.c
+index f461e1173..2c1624943 100644
+--- a/drivers/staging/media/tegra-video/vi.c
++++ b/drivers/staging/media/tegra-video/vi.c
+@@ -389,6 +389,34 @@ static int tegra_channel_enum_frameintervals(struct file *file, void *fh,
+ 	return 0;
+ }
+ 
++/*
++ * When the VI flips vertically (sensor without VFLIP), the Bayer rows in
++ * memory are swapped relative to the bus format, so report the row-swapped
++ * fourcc to userspace. The mapping is its own inverse.
++ */
++static u32 tegra_channel_mem_fourcc(struct tegra_vi_channel *chan, u32 fourcc)
++{
++	static const u32 swap[][2] = {
++		{ V4L2_PIX_FMT_SBGGR8, V4L2_PIX_FMT_SGRBG8 },
++		{ V4L2_PIX_FMT_SGBRG8, V4L2_PIX_FMT_SRGGB8 },
++		{ V4L2_PIX_FMT_SBGGR10, V4L2_PIX_FMT_SGRBG10 },
++		{ V4L2_PIX_FMT_SGBRG10, V4L2_PIX_FMT_SRGGB10 },
++	};
++	unsigned int i;
++
++	if (!chan->vflip)
++		return fourcc;
++
++	for (i = 0; i < ARRAY_SIZE(swap); i++) {
++		if (fourcc == swap[i][0])
++			return swap[i][1];
++		if (fourcc == swap[i][1])
++			return swap[i][0];
++	}
++
++	return fourcc;
++}
++
+ static int tegra_channel_enum_format(struct file *file, void *fh,
+ 				     struct v4l2_fmtdesc *f)
+ {
+@@ -405,7 +433,8 @@ static int tegra_channel_enum_format(struct file *file, void *fh,
+ 	for (i = 0; i < f->index + 1; i++, index++)
+ 		index = find_next_bit(fmts_bitmap, MAX_FORMAT_NUM, index);
+ 
+-	f->pixelformat = tegra_get_format_fourcc_by_idx(chan->vi, index - 1);
++	f->pixelformat = tegra_channel_mem_fourcc(chan,
++			tegra_get_format_fourcc_by_idx(chan->vi, index - 1));
+ 
+ 	return 0;
+ }
+@@ -416,6 +445,8 @@ static int tegra_channel_get_format(struct file *file, void *fh,
+ 	struct tegra_vi_channel *chan = video_drvdata(file);
+ 
+ 	format->fmt.pix = chan->format;
++	format->fmt.pix.pixelformat =
++		tegra_channel_mem_fourcc(chan, chan->format.pixelformat);
+ 
+ 	return 0;
+ }
+@@ -506,8 +537,14 @@ static int tegra_channel_try_format(struct file *file, void *fh,
+ 				    struct v4l2_format *format)
+ {
+ 	struct tegra_vi_channel *chan = video_drvdata(file);
++	struct v4l2_pix_format *pix = &format->fmt.pix;
++	int ret;
++
++	pix->pixelformat = tegra_channel_mem_fourcc(chan, pix->pixelformat);
++	ret = __tegra_channel_try_format(chan, pix);
++	pix->pixelformat = tegra_channel_mem_fourcc(chan, pix->pixelformat);
+ 
+-	return __tegra_channel_try_format(chan, &format->fmt.pix);
++	return ret;
+ }
+ 
+ static void tegra_channel_update_gangports(struct tegra_vi_channel *chan)
+@@ -533,6 +570,8 @@ static int tegra_channel_set_format(struct file *file, void *fh,
+ 	if (vb2_is_busy(&chan->queue))
+ 		return -EBUSY;
+ 
++	pix->pixelformat = tegra_channel_mem_fourcc(chan, pix->pixelformat);
++
+ 	/* get supported format by try_fmt */
+ 	ret = __tegra_channel_try_format(chan, pix);
+ 	if (ret)
+@@ -553,6 +592,7 @@ static int tegra_channel_set_format(struct file *file, void *fh,
+ 	chan->format = *pix;
+ 	chan->fmtinfo = fmtinfo;
+ 	tegra_channel_update_gangports(chan);
++	pix->pixelformat = tegra_channel_mem_fourcc(chan, pix->pixelformat);
+ 
+ 	return 0;
+ }
+@@ -993,8 +1033,22 @@ static int tegra_channel_setup_ctrl_handler(struct tegra_vi_channel *chan)
+ 		v4l2_ctrl_new_std(&chan->ctrl_handler, &vi_ctrl_ops, V4L2_CID_HFLIP, 0, 1, 1, 0);
+ 
+ 	vflip = v4l2_ctrl_find(subdev->ctrl_handler, V4L2_CID_VFLIP);
+-	if (chan->vi->soc->has_h_v_flip && !vflip)
+-		v4l2_ctrl_new_std(&chan->ctrl_handler, &vi_ctrl_ops, V4L2_CID_VFLIP, 0, 1, 1, 0);
++	if (chan->vi->soc->has_h_v_flip && !vflip) {
++		struct v4l2_ctrl *rot;
++		bool upside_down = false;
++
++		/*
++		 * A sensor mounted upside down that can only mirror itself
++		 * leaves the vertical flip to the VI: default it on.
++		 */
++		rot = v4l2_ctrl_find(subdev->ctrl_handler,
++				     V4L2_CID_CAMERA_SENSOR_ROTATION);
++		if (rot && hflip && v4l2_ctrl_g_ctrl(rot) == 180)
++			upside_down = true;
++
++		v4l2_ctrl_new_std(&chan->ctrl_handler, &vi_ctrl_ops, V4L2_CID_VFLIP,
++				  0, 1, 1, upside_down);
++	}
+ #endif
+ 
+ 	/* setup the controls */
+-- 
+2.47.3
+

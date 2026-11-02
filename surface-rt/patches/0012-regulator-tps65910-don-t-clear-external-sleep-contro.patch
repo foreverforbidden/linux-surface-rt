@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 09:20:19 +0000
+Subject: [PATCH 12/45] regulator: tps65910: don't clear external sleep control
+ on restart
+
+On the Microsoft Surface RT, clearing the external sleep control of the
+rails in tps65910_shutdown() hangs the SoC (vdd_cpu is under EN1 control),
+so every reboot hung until the PMIC watchdog power-cycled it (~100 s).
+Found by logging device shutdown with the eMMC kept alive: the last device
+was tps65910-pmic. A restart goes through the PMIC (DEV_OFF_RST), which
+resets those registers anyway, so skip it on restart.
+---
+ drivers/regulator/tps65910-regulator.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/regulator/tps65910-regulator.c b/drivers/regulator/tps65910-regulator.c
+index 3a3027e0b..f31104d07 100644
+--- a/drivers/regulator/tps65910-regulator.c
++++ b/drivers/regulator/tps65910-regulator.c
+@@ -1226,6 +1226,15 @@ static void tps65910_shutdown(struct platform_device *pdev)
+ 	struct tps65910_reg *pmic = platform_get_drvdata(pdev);
+ 	int i;
+ 
++	/*
++	 * A restart goes through the PMIC itself (DEV_OFF_RST), which resets
++	 * these registers anyway. On the Microsoft Surface RT, whose vdd_cpu
++	 * is under EN1 external control, clearing the external control here
++	 * hangs the SoC before the restart handler runs.
++	 */
++	if (system_state == SYSTEM_RESTART)
++		return;
++
+ 	/*
+ 	 * Before bootloader jumps to kernel, it makes sure that required
+ 	 * external control signals are in desired state so that given rails
+-- 
+2.47.3
+

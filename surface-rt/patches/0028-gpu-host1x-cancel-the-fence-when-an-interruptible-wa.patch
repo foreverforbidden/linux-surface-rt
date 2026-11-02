@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 13:50:29 +0000
+Subject: [PATCH 28/45] gpu: host1x: cancel the fence when an interruptible
+ wait is interrupted
+
+host1x_syncpt_wait() only cancels its fence on timeout. When
+dma_fence_wait_timeout() returns -ERESTARTSYS, the fence stays queued on
+the syncpoint interrupt list with its reference held, so every
+interrupted wait leaks a fence until the syncpoint finally reaches the
+threshold, or forever if it never does. Callers that retry on
+-ERESTARTSYS (tegra-video) can exhaust memory this way. Cancel the fence
+on any unsuccessful wait.
+---
+ drivers/gpu/host1x/syncpt.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/host1x/syncpt.c b/drivers/gpu/host1x/syncpt.c
+index 807c74fc6..2cc35a7b0 100644
+--- a/drivers/gpu/host1x/syncpt.c
++++ b/drivers/gpu/host1x/syncpt.c
+@@ -242,7 +242,7 @@ int host1x_syncpt_wait(struct host1x_syncpt *sp, u32 thresh, long timeout,
+ 		return PTR_ERR(fence);
+ 
+ 	wait_err = dma_fence_wait_timeout(fence, true, timeout);
+-	if (wait_err == 0)
++	if (wait_err <= 0)
+ 		host1x_fence_cancel(fence);
+ 	dma_fence_put(fence);
+ 
+-- 
+2.47.3
+

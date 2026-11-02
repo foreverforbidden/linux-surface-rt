@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 13:03:19 +0000
+Subject: [PATCH 25/45] wifi: mwifiex: use the legacy scan with pre-14.68
+ firmware
+
+The 88W8797 firmware with Bluetooth on UART (14.62.17.p215), which the
+Surface RT needs for Bluetooth, rejects HostCmd_CMD_802_11_SCAN_EXT with
+result 2, so the interface never finds a network. Use the legacy scan
+command when the firmware is older than 14.68.
+---
+ drivers/net/wireless/marvell/mwifiex/cmdevt.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/net/wireless/marvell/mwifiex/cmdevt.c b/drivers/net/wireless/marvell/mwifiex/cmdevt.c
+index 29e0f2745..eac2c8cea 100644
+--- a/drivers/net/wireless/marvell/mwifiex/cmdevt.c
++++ b/drivers/net/wireless/marvell/mwifiex/cmdevt.c
+@@ -1530,6 +1530,16 @@ int mwifiex_ret_get_hw_spec(struct mwifiex_private *priv,
+ 
+ 	adapter->fw_release_number = le32_to_cpu(hw_spec->fw_release_number);
+ 	adapter->fw_api_ver = (adapter->fw_release_number >> 16) & 0xff;
++	/*
++	 * The 88W8797 firmware with Bluetooth on UART (14.62.17.p215, as used on the
++	 * Microsoft Surface RT) rejects the extended scan command
++	 * (0x107, result 2); 14.68 firmware takes it. Fall back to the legacy scan command.
++	 */
++	if (adapter->ext_scan && adapter->fw_api_ver == 14 &&
++	    ((adapter->fw_release_number >> 8) & 0xff) < 68) {
++		mwifiex_dbg(adapter, MSG, "firmware has no extended scan, using legacy scan\n");
++		adapter->ext_scan = false;
++	}
+ 	adapter->number_of_antenna =
+ 			le16_to_cpu(hw_spec->number_of_antenna) & 0xf;
+ 
+-- 
+2.47.3
+

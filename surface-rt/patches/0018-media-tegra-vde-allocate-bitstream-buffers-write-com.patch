@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nuno407 <11352538+nuno407@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:44:32 +0000
+Subject: [PATCH 18/45] media: tegra-vde: allocate bitstream buffers
+ write-combined
+
+With the IOMMU in use the driver allocates all buffers with
+vb2_dma_sg_memops, i.e. cacheable pages. Bitstream buffers are at least
+2 MiB while a frame only fills a few KiB of them, yet both the dma-buf
+end_cpu_access (DMA_BUF_IOCTL_SYNC, issued by GStreamer) and the vb2
+buffer prepare clean the whole buffer, twice per frame. On Tegra30 with
+the L2C-310 this made the kernel spend ~60% of the decode CPU time in
+v7_dma_clean_range/l2c210_clean_range.
+
+Allocate the OUTPUT queue with vb2_dma_contig_memops and
+DMA_ATTR_WRITE_COMBINE instead and map it into the VDE IOMMU domain, so no
+cache maintenance is needed. The buffers are small enough for CMA.
+
+Measured with GStreamer v4l2slh264dec ! fakevideosink, 300 frames,
+system CPU time: 1080p 7.58 s -> 2.86 s, 720p 2.52 s -> 1.25 s,
+360p 1.66 s -> 0.37 s; output is bit-exact with avdec_h264.
+
+Note that OUTPUT dma-bufs imported by userspace must now be contiguous
+for vb2-dma-contig; GStreamer and FFmpeg use MMAP bitstream buffers.
+---
+ .../media/platform/nvidia/tegra-vde/v4l2.c    | 34 +++++++++++++++++--
+ 1 file changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/platform/nvidia/tegra-vde/v4l2.c b/drivers/media/platform/nvidia/tegra-vde/v4l2.c
+index f2ca1c7ed..b4b2811e2 100644
+--- a/drivers/media/platform/nvidia/tegra-vde/v4l2.c
++++ b/drivers/media/platform/nvidia/tegra-vde/v4l2.c
+@@ -187,7 +187,30 @@ static int tegra_buf_init(struct vb2_buffer *vb)
+ 			continue;
+ 		}
+ 
+-		if (vde->domain) {
++		if (vde->domain && V4L2_TYPE_IS_OUTPUT(vq->type) &&
++		    vq->memory == VB2_MEMORY_MMAP) {
++			struct sg_table contig_sgt;
++
++			/*
++			 * Bitstream buffers are write-combined dma-contig
++			 * allocations whose kernel mapping is the DMA cookie.
++			 */
++			err = dma_get_sgtable_attrs(vde->dev, &contig_sgt,
++						    vb2_plane_vaddr(vb, i),
++						    vb2_dma_contig_plane_dma_addr(vb, i),
++						    vb2_plane_size(vb, i),
++						    vq->dma_attrs);
++			if (err)
++				goto cleanup;
++
++			err = tegra_vde_iommu_map(vde, &contig_sgt, &tb->iova[i],
++						  vb2_plane_size(vb, i));
++			sg_free_table(&contig_sgt);
++			if (err)
++				goto cleanup;
++
++			tb->dma_base[i] = iova_dma_addr(&vde->iova, tb->iova[i]);
++		} else if (vde->domain) {
+ 			sgt = vb2_dma_sg_plane_desc(vb, i);
+ 
+ 			err = tegra_vde_iommu_map(vde, sgt, &tb->iova[i],
+@@ -346,6 +369,13 @@ static int tegra_queue_init(void *priv,
+ 	 * driver. For now we need to stick with SG ops in order to be able
+ 	 * to get SGT table easily. This is suboptimal since SG mappings are
+ 	 * wasting CPU cache and we don't need that caching.
++	 *
++	 * Bitstream buffers are an exception: they are at least 2 MiB while
++	 * only a few KiB are filled per frame, but cacheable SG buffers get
++	 * cleaned in full twice per frame (dma-buf end_cpu_access and buffer
++	 * prepare), costing several ms of CPU time per frame on Tegra30.
++	 * Allocate them as write-combined dma-contig buffers instead; they
++	 * are small enough for CMA and need no cache maintenance at all.
+ 	 */
+ 	if (vde->domain)
+ 		mem_ops = &vb2_dma_sg_memops;
+@@ -362,7 +392,7 @@ static int tegra_queue_init(void *priv,
+ 	src_vq->requires_requests = true;
+ 	src_vq->lock = &vde->v4l2_lock;
+ 	src_vq->dma_attrs = dma_attrs;
+-	src_vq->mem_ops = mem_ops;
++	src_vq->mem_ops = &vb2_dma_contig_memops;
+ 	src_vq->ops = &tegra_qops;
+ 	src_vq->drv_priv = ctx;
+ 	src_vq->dev = vde->dev;
+-- 
+2.47.3
+
