@@ -16,8 +16,8 @@ Corporation.
 
 - A Surface RT whose firmware starts a Linux kernel you built. A stock unit does not: it only starts
   what Microsoft signed. How to get there is not covered here.
-- Docker on an amd64 host. The build runs in an amd64 Debian 13 container (`docker/Dockerfile`) with
-  the cross compiler for 32-bit ARM; nothing is emulated.
+- Docker. The build runs in a Debian 13 container for the host's own architecture
+  (`docker/Dockerfile`) with the cross compiler for 32-bit ARM; nothing is emulated.
 - About 4 GB of disk for the kernel tree and its objects, kept in a Docker volume, not on the host.
 - A network connection the first time, for the kernel tarball (about 160 MB). Every other source is in
   this repository ([SOURCES.md](SOURCES.md)).

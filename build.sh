@@ -25,8 +25,9 @@ mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 IMAGE=${BUILD_IMAGE:-linux-surface-rt-build}
 VOLUME=${VOLUME:-linux-surface-rt-src}
-docker image inspect "$IMAGE" >/dev/null 2>&1 ||
-	docker build --platform linux/amd64 -t "$IMAGE" "$R/docker"
+# The image is built for the host: one of another architecture would run under emulation.
+[ "$(docker image inspect -f '{{.Architecture}}' "$IMAGE" 2>/dev/null)" = "$(docker version -f '{{.Server.Arch}}')" ] ||
+	docker build -t "$IMAGE" "$R/docker"
 commit() { git -C "$1" rev-parse HEAD 2>/dev/null || true; }
 set -- -e SOURCE_COMMIT="$(commit "$R")" -e WORK="${WORK:-/src/$DEV}" -e OUT=/out
 if [ -n "${OVERLAY:-}" ]; then
@@ -37,5 +38,5 @@ for v in KTREE CACHE JOBS ${PASS_ENV:-}; do
 	eval "x=\${$v:-}"
 	[ -n "$x" ] && set -- "$@" -e "$v=$x"
 done
-exec docker run --rm --platform linux/amd64 \
+exec docker run --rm \
 	-v "$VOLUME:/src" -v "$R:/repo:ro" -v "$OUT:/out" "$@" -w /repo "$IMAGE" bash "/repo/$DEV/build.sh"

@@ -1,5 +1,6 @@
-# The build container: Debian 13 on amd64, with the cross compiler for 32-bit ARM. No emulation.
-FROM --platform=linux/amd64 debian:trixie-slim
+# The build container: Debian 13 for the host's own architecture, with the cross compiler for 32-bit
+# ARM. No emulation.
+FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc-arm-linux-gnueabihf libc6-dev-armhf-cross gcc libc6-dev make bc bison flex \
