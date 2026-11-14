@@ -84,6 +84,10 @@ configuration, steps of its own and its own build identity. Set `OVERLAY` to it:
 The overlay is mounted read-only at `/overlay` in the container. `PASS_ENV` names more environment
 variables `build.sh` passes into the container, for the overlay's own settings.
 
+## Older userlands
+
+The modules are compressed with zstd. A `kmod` without zstd support cannot load them, Raspberry Pi OS 11's `kmod` 28 among them, and then Wi-Fi does not come up. [examples/raspbian-bullseye](examples/raspbian-bullseye) is an overlay that turns compression off, with two more options for systemd on Raspberry Pi OS 11. [examples/uefi-shell](examples/uefi-shell) has boot scripts for a one-shot trial boot with a fallback to the old kernel.
+
 ## Licenses
 
 The patches, the drivers and the device trees are under the licenses their files state, GPL-2.0 for
